@@ -250,6 +250,7 @@ const uint8_t gImage_qq_logo[3200] = { /* 0X00,0X10,0X28,0X00,0X28,0X00,0X01,0X1
 };
 
 SemaphoreHandle_t lcd_sem;
+uint32_t mosi_bitlen = 0;
 
 void lcd_delay_ms(uint32_t time)
 {
@@ -259,38 +260,39 @@ void lcd_delay_ms(uint32_t time)
 //向液晶屏写一个8位指令
 void lcd_write_cmd(uint8_t data)
 {
+    uint32_t bitlen = 8;
     uint32_t buf = data<<24;
-    // if( xSemaphoreTake( lcd_sem, ( TickType_t ) portMAX_DELAY ) == pdTRUE ) {
-        gpio_set_level(LCD_DC_GPIO, 0);
-        hspi_write(&buf, 8);  
-    // }
+    gpio_set_level(LCD_DC_GPIO, 0);
+    hspi_set_mosi_bitlen(&bitlen);
+    hspi_trans(NULL, NULL, &buf, NULL);
 }
 
 //向液晶屏写一个8位数据
 void lcd_write_byte(uint8_t data)
-{   
+{
+    uint32_t bitlen = 8;
     uint32_t buf = data<<24; 
-    // if( xSemaphoreTake( lcd_sem, ( TickType_t ) portMAX_DELAY ) == pdTRUE ) {
-        gpio_set_level(LCD_DC_GPIO, 1);
-        hspi_write(&buf, 8);
-    // }
+    gpio_set_level(LCD_DC_GPIO, 1);
+    hspi_set_mosi_bitlen(&bitlen);
+    hspi_trans(NULL, NULL, &buf, NULL);
 }
 //向液晶屏写一个16位数据
 void lcd_write_2byte(uint16_t data)
 {
+    uint32_t bitlen = 16;
     uint32_t buf = data<<16;
-    // if( xSemaphoreTake( lcd_sem, ( TickType_t ) portMAX_DELAY ) == pdTRUE ) {
-        gpio_set_level(LCD_DC_GPIO, 1);
-        hspi_write(&buf, 16);
-    // }
+    gpio_set_level(LCD_DC_GPIO, 1);
+    hspi_set_mosi_bitlen(&bitlen);
+    hspi_trans(NULL, NULL, &buf, NULL);
 }
 
 void lcd_write_word(uint32_t data)
 {
-    // if( xSemaphoreTake( lcd_sem, ( TickType_t ) portMAX_DELAY ) == pdTRUE ) {
-        gpio_set_level(LCD_DC_GPIO, 1);
-        hspi_write(&data, 32);
-    // }    
+    uint32_t bitlen = 32;
+    uint32_t buf = data;
+    gpio_set_level(LCD_DC_GPIO, 1);
+    hspi_set_mosi_bitlen(&bitlen);
+    hspi_trans(NULL, NULL, &buf, NULL);
 }
     
 void lcd_rst()
@@ -308,45 +310,45 @@ void lcd_init()
     lcd_rst();//lcd_rst before LCD Init.
     //    lcd_write_cmd(0x11);//Sleep exit 
     lcd_delay_ms (120);
-    lcd_write_cmd(0x36); 
+    lcd_write_cmd(0x36);    // MADCTL (36h): Memory Data Access Control .
     lcd_write_byte(0x00);
 
-    lcd_write_cmd(0x3A); 
+    lcd_write_cmd(0x3A);    // COLMOD (3Ah): Interface Pixel Format 
     lcd_write_byte(0x05);
 
-    lcd_write_cmd(0xB2);
+    lcd_write_cmd(0xB2);    // PORCTRL (B2h): Porch Setting 
     lcd_write_byte(0x0C);
     lcd_write_byte(0x0C);
     lcd_write_byte(0x00);
     lcd_write_byte(0x33);
     lcd_write_byte(0x33);
 
-    lcd_write_cmd(0xB7); 
+    lcd_write_cmd(0xB7);    // GCTRL (B7h): Gate Control 
     lcd_write_byte(0x35);  
 
-    lcd_write_cmd(0xBB);
-    lcd_write_byte(0x19);
+    lcd_write_cmd(0xBB);    // VCOMS (BBh): VCOM Setting 
+    lcd_write_byte(0x37);   // 1.415
 
-    lcd_write_cmd(0xC0);
+    lcd_write_cmd(0xC0);    // LCMCTRL (C0h): LCM Control 
     lcd_write_byte(0x2C);
 
-    lcd_write_cmd(0xC2);
+    lcd_write_cmd(0xC2);    // VDVVRHEN (C2h): VDV and VRH Command Enable 
     lcd_write_byte(0x01);
 
-    lcd_write_cmd(0xC3);
+    lcd_write_cmd(0xC3);    // VRHS (C3h): VRH Set 
     lcd_write_byte(0x12);   
 
-    lcd_write_cmd(0xC4);
+    lcd_write_cmd(0xC4);    // VDVS (C4h): VDV Set 
     lcd_write_byte(0x20);  
 
-    lcd_write_cmd(0xC6); 
+    lcd_write_cmd(0xC6);    // FRCTRL2 (C6h): Frame Rate Control in Normal Mode 
     lcd_write_byte(0x0F);    
 
-    lcd_write_cmd(0xD0); 
+    lcd_write_cmd(0xD0);    // PWCTRL1 (D0h): Power Control 1 
     lcd_write_byte(0xA4);
     lcd_write_byte(0xA1);
 
-    lcd_write_cmd(0xE0);
+    lcd_write_cmd(0xE0);    // PVGAMCTRL (E0h): Positive Voltage Gamma Control 
     lcd_write_byte(0xD0);
     lcd_write_byte(0x04);
     lcd_write_byte(0x0D);
@@ -362,7 +364,7 @@ void lcd_init()
     lcd_write_byte(0x1F);
     lcd_write_byte(0x23);
 
-    lcd_write_cmd(0xE1);
+    lcd_write_cmd(0xE1);    // NVGAMCTRL (E1h): Negative Voltage Gamma Control
     lcd_write_byte(0xD0);
     lcd_write_byte(0x04);
     lcd_write_byte(0x0C);
@@ -378,29 +380,29 @@ void lcd_init()
     lcd_write_byte(0x20);
     lcd_write_byte(0x23);
 
-    lcd_write_cmd(0x21); 
+    lcd_write_cmd(0x21);    // INVON (21h): Display Inversion On 
 
-    lcd_write_cmd(0x11); 
+    lcd_write_cmd(0x11);    // SLPOUT (11h): Sleep Out 
 
 
-    lcd_write_cmd(0x29); 
+    lcd_write_cmd(0x29);    // DISPON (29h): Display On
 }
 
 void lcd_set_index(uint16_t x_start,uint16_t y_start,uint16_t x_end,uint16_t y_end)
 {    
-    lcd_write_cmd(0x2a);
+    lcd_write_cmd(0x2a);    // CASET (2Ah): Column Address Set 
     // Must write byte than byte
     lcd_write_byte(0x00);
     lcd_write_byte(x_start);
     lcd_write_byte(0x00);
     lcd_write_byte(x_end);
 
-    lcd_write_cmd(0x2b);
+    lcd_write_cmd(0x2b);    // RASET (2Bh): Row Address Set 
     lcd_write_byte(0x00);
     lcd_write_byte(y_start);
     lcd_write_byte(0x00);
     lcd_write_byte(y_end);    
-    lcd_write_cmd(0x2c);
+    lcd_write_cmd(0x2c);    // RAMWR (2Ch): Memory Write 
 }
 
 
@@ -411,25 +413,164 @@ void lcd_write_point(uint16_t x_start,uint16_t y_start,uint16_t color)
     
 }
 
+
+void lcd_draw_line(uint16_t x1,uint16_t y1,uint16_t x2,uint16_t y2,uint16_t color)
+{
+    int dx,dy,e;
+    dx=x2-x1; 
+    dy=y2-y1;
+    if(dx>=0)
+    {
+        if(dy >= 0) // dy>=0
+        {
+            if(dx>=dy) // 1/8 octant
+            {
+                e=dy-dx/2;
+                while(x1<=x2)
+                {
+                    lcd_write_point(x1,y1,color);
+                    if(e>0){y1+=1;e-=dx;}   
+                    x1+=1;
+                    e+=dy;
+                }
+            }
+            else        // 2/8 octant
+            {
+                e=dx-dy/2;
+                while(y1<=y2)
+                {
+                    lcd_write_point(x1,y1,color);
+                    if(e>0){x1+=1;e-=dy;}   
+                    y1+=1;
+                    e+=dx;
+                }
+            }
+        }
+        else           // dy<0
+        {
+            dy=-dy;   // dy=abs(dy)
+            if(dx>=dy) // 8/8 octant
+            {
+                e=dy-dx/2;
+                while(x1<=x2)
+                {
+                    lcd_write_point(x1,y1,color);
+                    if(e>0){y1-=1;e-=dx;}   
+                    x1+=1;
+                    e+=dy;
+                }
+            }
+            else        // 7/8 octant
+            {
+                e=dx-dy/2;
+                while(y1>=y2)
+                {
+                    lcd_write_point(x1,y1,color);
+                    if(e>0){x1+=1;e-=dy;}   
+                    y1-=1;
+                    e+=dx;
+                }
+            }
+        }   
+    }
+    else //dx<0
+    {
+        dx=-dx;     //dx=abs(dx)
+        if(dy >= 0) // dy>=0
+        {
+            if(dx>=dy) // 4/8 octant
+            {
+                e=dy-dx/2;
+                while(x1>=x2)
+                {
+                    lcd_write_point(x1,y1,color);
+                    if(e>0){y1+=1;e-=dx;}   
+                    x1-=1;
+                    e+=dy;
+                }
+            }
+            else        // 3/8 octant
+            {
+                e=dx-dy/2;
+                while(y1<=y2)
+                {
+                    lcd_write_point(x1,y1,color);
+                    if(e>0){x1-=1;e-=dy;}   
+                    y1+=1;
+                    e+=dx;
+                }
+            }
+        }
+        else           // dy<0
+        {
+            dy=-dy;   // dy=abs(dy)
+            if(dx>=dy) // 5/8 octant
+            {
+                e=dy-dx/2;
+                while(x1>=x2)
+                {
+                    lcd_write_point(x1,y1,color);
+                    if(e>0){y1-=1;e-=dx;}   
+                    x1-=1;
+                    e+=dy;
+                }
+            }
+            else        // 6/8 octant
+            {
+                e=dx-dy/2;
+                while(y1>=y2)
+                {
+                    lcd_write_point(x1,y1,color);
+                    if(e>0){x1-=1;e-=dy;}   
+                    y1-=1;
+                    e+=dx;
+                }
+            }
+        }   
+    }
+}
+
+void lcd_draw_circle(uint16_t x, uint16_t y, uint16_t r, uint16_t color)
+{
+    int a, b, num;
+    a = 0;
+    b = r;
+    while(2 * b * b >= r * r)          // 1/8圆即可
+    {
+        lcd_write_point(x + a, y - b,color); // 0~1
+        lcd_write_point(x - a, y - b,color); // 0~7
+        lcd_write_point(x - a, y + b,color); // 4~5
+        lcd_write_point(x + a, y + b,color); // 4~3
+ 
+        lcd_write_point(x + b, y + a,color); // 2~3
+        lcd_write_point(x + b, y - a,color); // 2~1
+        lcd_write_point(x - b, y - a,color); // 6~7
+        lcd_write_point(x - b, y + a,color); // 6~5
+        
+        a++;
+        num = (a * a + b * b) - r*r;
+        if(num > 0)
+        {
+            b--;
+            a--;
+        }
+    }
+}
+
 void lcd_clear(uint16_t color)
 {
     uint32_t data[16];
     uint32_t i,x;
+    uint32_t bitlen = 512;
 
     for (i=0;i<16;i++) {
         data[i] = (color<<16) | color;
     }
     lcd_set_index(0,0,240-1,240-1);
     gpio_set_level(LCD_DC_GPIO, 1);
-    SPI1.user.usr_mosi = 1;
-    SPI1.user1.usr_mosi_bitlen = 512 - 1;
+    hspi_set_mosi_bitlen(&bitlen);
     for (i=0;i<=1800;i++) {
-        // hspi_write(data, 16*32);
-        while(SPI1.cmd.usr);
-        for (x = 0; x < 16; x++) {
-            SPI1.data_buf[x] = data[x];
-        }
-        SPI1.cmd.usr = 1;
+        hspi_trans(NULL, NULL, data, NULL);
     }
 }
 
@@ -464,6 +605,7 @@ void lcd_show_qq(const uint8_t *p) //显示40*40 QQ图片
 {
     int x,y,z; 
     uint32_t data_buf[20];
+    uint32_t bitlen = 512;
     lcd_set_index(0,0,240-1,240-1); // 按顺序填充数据，能够最大利用带宽
     gpio_set_level(LCD_DC_GPIO, 1);
     for (z=0;z<6;z++) {
@@ -472,8 +614,12 @@ void lcd_show_qq(const uint8_t *p) //显示40*40 QQ图片
                 data_buf[x] = *(p+y*80+x*4+1)<<24 | *(p+y*80+x*4)<<16 | *(p+y*80+x*4+3)<<8 | *(p+y*80+x*4+2);
             }
             for (x=0;x<6;x++) {
-                hspi_write(data_buf, 16*32);
-                hspi_write(data_buf+16, 4*32);
+                bitlen = 512;
+                hspi_set_mosi_bitlen(&bitlen);
+                hspi_trans(NULL, NULL, data_buf, NULL);
+                bitlen = 128;
+                hspi_set_mosi_bitlen(&bitlen);
+                hspi_trans(NULL, NULL, data_buf+16, NULL);
             }
         }
     }
@@ -549,6 +695,8 @@ void app_main(void)
     lcd_write_point(10,10,YELLOW);
     lcd_fill(20,20,120,120,RED);
     lcd_fill(180,180,220,220,CYAN);
+    lcd_draw_circle(120, 120, 120, YELLOW);
+    lcd_draw_line(0,0,240-1,240-1,MAGENTA);
     vTaskDelay(2000 / portTICK_RATE_MS);
     while(1) {
         lcd_clear(test_color[x]);
@@ -560,6 +708,7 @@ void app_main(void)
             x = 0;
         }
     }
+    //lcd_show_qq(gImage_qq_logo);
 }
 
 
