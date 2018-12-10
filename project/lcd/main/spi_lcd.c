@@ -12,11 +12,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "esp8266/gpio_struct.h"
+#include "esp_system.h"
 #include "esp_log.h"
+#include "esp_libc.h"
 
 #include "driver/gpio.h"
 #include "driver/hspi.h"
+#include "esp8266/spi_struct.h"
 
 static const char *TAG = "spi_lcd";
 #define LCD_SCL_GPIO    14
@@ -245,6 +249,8 @@ const uint8_t gImage_qq_logo[3200] = { /* 0X00,0X10,0X28,0X00,0X28,0X00,0X01,0X1
 0XE4,0XD2,0X6A,0XC3,0XB6,0XD5,0XFF,0XFF,0XFF,0XFF,0XFF,0XFF,0XFF,0XFF,0XFF,0XFF,
 };
 
+SemaphoreHandle_t lcd_sem;
+
 void lcd_delay_ms(uint32_t time)
 {
     vTaskDelay(time /portTICK_RATE_MS);
@@ -254,29 +260,37 @@ void lcd_delay_ms(uint32_t time)
 void lcd_write_cmd(uint8_t data)
 {
     uint32_t buf = data<<24;
-    gpio_set_level(LCD_DC_GPIO, 0);
-    hspi_write(&buf, 8);  
+    // if( xSemaphoreTake( lcd_sem, ( TickType_t ) portMAX_DELAY ) == pdTRUE ) {
+        gpio_set_level(LCD_DC_GPIO, 0);
+        hspi_write(&buf, 8);  
+    // }
 }
 
 //向液晶屏写一个8位数据
 void lcd_write_byte(uint8_t data)
 {   
     uint32_t buf = data<<24; 
-    gpio_set_level(LCD_DC_GPIO, 1);
-    hspi_write(&buf, 8);
+    // if( xSemaphoreTake( lcd_sem, ( TickType_t ) portMAX_DELAY ) == pdTRUE ) {
+        gpio_set_level(LCD_DC_GPIO, 1);
+        hspi_write(&buf, 8);
+    // }
 }
 //向液晶屏写一个16位数据
 void lcd_write_2byte(uint16_t data)
 {
     uint32_t buf = data<<16;
-    gpio_set_level(LCD_DC_GPIO, 1);
-    hspi_write(&buf, 16);
+    // if( xSemaphoreTake( lcd_sem, ( TickType_t ) portMAX_DELAY ) == pdTRUE ) {
+        gpio_set_level(LCD_DC_GPIO, 1);
+        hspi_write(&buf, 16);
+    // }
 }
 
 void lcd_write_word(uint32_t data)
 {
-    gpio_set_level(LCD_DC_GPIO, 1);
-    hspi_write(&data, 32);
+    // if( xSemaphoreTake( lcd_sem, ( TickType_t ) portMAX_DELAY ) == pdTRUE ) {
+        gpio_set_level(LCD_DC_GPIO, 1);
+        hspi_write(&data, 32);
+    // }    
 }
     
 void lcd_rst()
@@ -289,6 +303,8 @@ void lcd_rst()
 
 void lcd_init()
 {    
+    lcd_sem = xSemaphoreCreateBinary();
+    xSemaphoreGive( lcd_sem );
     lcd_rst();//lcd_rst before LCD Init.
     //    lcd_write_cmd(0x11);//Sleep exit 
     lcd_delay_ms (120);
@@ -398,15 +414,22 @@ void lcd_write_point(uint16_t x_start,uint16_t y_start,uint16_t color)
 void lcd_clear(uint16_t color)
 {
     uint32_t data[16];
-    uint32_t i;
+    uint32_t i,x;
 
     for (i=0;i<16;i++) {
         data[i] = (color<<16) | color;
     }
     lcd_set_index(0,0,240-1,240-1);
     gpio_set_level(LCD_DC_GPIO, 1);
+    SPI1.user.usr_mosi = 1;
+    SPI1.user1.usr_mosi_bitlen = 512 - 1;
     for (i=0;i<=1800;i++) {
-        hspi_write(data, 16*32);
+        // hspi_write(data, 16*32);
+        while(SPI1.cmd.usr);
+        for (x = 0; x < 16; x++) {
+            SPI1.data_buf[x] = data[x];
+        }
+        SPI1.cmd.usr = 1;
     }
 }
 
@@ -458,6 +481,7 @@ void lcd_show_qq(const uint8_t *p) //显示40*40 QQ图片
 
 void IRAM_ATTR hspi_event_callback(int event, void *arg)
 {
+    BaseType_t xHigherPriorityTaskWoken;
     switch (event) {
         case HSPI_INIT_EVENT: {
 
@@ -469,7 +493,10 @@ void IRAM_ATTR hspi_event_callback(int event, void *arg)
         break;
 
         case HSPI_TRANS_DONE_EVENT: {
-
+            xSemaphoreGiveFromISR( lcd_sem, &xHigherPriorityTaskWoken );
+            if (xHigherPriorityTaskWoken == pdTRUE) {
+                taskYIELD();
+            }
         }
         break;
 
@@ -485,6 +512,8 @@ void app_main(void)
     uint16_t test_color[16] = {BLACK, NAVY, DGREEN, DCYAN, MAROON, PURPLE, OLIVE, LGRAY, DGRAY, BLUE, GREEN, CYAN, RED, MAGENTA, YELLOW, WHITE};
     int x = 0;
     ESP_LOGI(TAG, "init hspi");
+
+    rtc_clk_cpu_freq_set(RTC_CPU_FREQ_160M);
 
     gpio_config_t io_conf;
     io_conf.intr_type = GPIO_INTR_DISABLE;
@@ -512,7 +541,7 @@ void app_main(void)
     // Load default bitlen parameters
     hspi_config.bitlen.val = HSPI_DEFAULT_MASTER_BITLEN;
     // Register HSPI event callback function
-    hspi_config.event_cb = NULL;
+    hspi_config.event_cb = hspi_event_callback;
     hspi_init(&hspi_config);
 
     lcd_init();
