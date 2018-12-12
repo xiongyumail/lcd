@@ -19,7 +19,7 @@
 #include "esp_libc.h"
 
 #include "driver/gpio.h"
-#include "driver/hspi.h"
+#include "driver/spi.h"
 #include "esp8266/spi_struct.h"
 
 static const char *TAG = "spi_lcd";
@@ -260,39 +260,46 @@ void lcd_delay_ms(uint32_t time)
 //向液晶屏写一个8位指令
 void lcd_write_cmd(uint8_t data)
 {
-    uint32_t bitlen = 8;
     uint32_t buf = data<<24;
+    spi_trans_t trans = {0};
+    trans.mosi = &buf;
+    trans.bits.mosi = 8;
+    
     gpio_set_level(LCD_DC_GPIO, 0);
-    hspi_set_mosi_bitlen(&bitlen);
-    hspi_trans(NULL, NULL, &buf, NULL);
+    spi_trans(HSPI_HOST, trans);
 }
 
 //向液晶屏写一个8位数据
 void lcd_write_byte(uint8_t data)
 {
-    uint32_t bitlen = 8;
-    uint32_t buf = data<<24; 
+    uint32_t buf = data<<24;
+    spi_trans_t trans = {0};
+    trans.mosi = &buf;
+    trans.bits.mosi = 8;
+
     gpio_set_level(LCD_DC_GPIO, 1);
-    hspi_set_mosi_bitlen(&bitlen);
-    hspi_trans(NULL, NULL, &buf, NULL);
+    spi_trans(HSPI_HOST, trans);
 }
 //向液晶屏写一个16位数据
 void lcd_write_2byte(uint16_t data)
 {
-    uint32_t bitlen = 16;
     uint32_t buf = data<<16;
+    spi_trans_t trans = {0};
+    trans.mosi = &buf;
+    trans.bits.mosi = 16;
+
     gpio_set_level(LCD_DC_GPIO, 1);
-    hspi_set_mosi_bitlen(&bitlen);
-    hspi_trans(NULL, NULL, &buf, NULL);
+    spi_trans(HSPI_HOST, trans);
 }
 
 void lcd_write_word(uint32_t data)
 {
-    uint32_t bitlen = 32;
-    uint32_t buf = data;
+    spi_trans_t trans = {0};
+    trans.mosi = &data;
+    trans.bits.mosi = 32;
+
     gpio_set_level(LCD_DC_GPIO, 1);
-    hspi_set_mosi_bitlen(&bitlen);
-    hspi_trans(NULL, NULL, &buf, NULL);
+    spi_trans(HSPI_HOST, trans);
 }
     
 void lcd_rst()
@@ -560,17 +567,18 @@ void lcd_draw_circle(uint16_t x, uint16_t y, uint16_t r, uint16_t color)
 void lcd_clear(uint16_t color)
 {
     uint32_t data[16];
-    uint32_t i,x;
-    uint32_t bitlen = 512;
+    uint32_t i;
+    spi_trans_t trans = {0};
+    trans.mosi = data;
+    trans.bits.mosi = 32*16;
 
     for (i=0;i<16;i++) {
         data[i] = (color<<16) | color;
     }
     lcd_set_index(0,0,240-1,240-1);
     gpio_set_level(LCD_DC_GPIO, 1);
-    hspi_set_mosi_bitlen(&bitlen);
     for (i=0;i<=1800;i++) {
-        hspi_trans(NULL, NULL, data, NULL);
+        spi_trans(HSPI_HOST, trans);
     }
 }
 
@@ -605,7 +613,7 @@ void lcd_show_qq(const uint8_t *p) //显示40*40 QQ图片
 {
     int x,y,z; 
     uint32_t data_buf[20];
-    uint32_t bitlen = 512;
+    spi_trans_t trans = {0};
     lcd_set_index(0,0,240-1,240-1); // 按顺序填充数据，能够最大利用带宽
     gpio_set_level(LCD_DC_GPIO, 1);
     for (z=0;z<6;z++) {
@@ -614,39 +622,39 @@ void lcd_show_qq(const uint8_t *p) //显示40*40 QQ图片
                 data_buf[x] = *(p+y*80+x*4+1)<<24 | *(p+y*80+x*4)<<16 | *(p+y*80+x*4+3)<<8 | *(p+y*80+x*4+2);
             }
             for (x=0;x<6;x++) {
-                bitlen = 512;
-                hspi_set_mosi_bitlen(&bitlen);
-                hspi_trans(NULL, NULL, data_buf, NULL);
-                bitlen = 128;
-                hspi_set_mosi_bitlen(&bitlen);
-                hspi_trans(NULL, NULL, data_buf+16, NULL);
+                trans.mosi = data_buf;
+                trans.bits.mosi = 32*16;
+                spi_trans(HSPI_HOST, trans);
+                trans.mosi = data_buf + 16;
+                trans.bits.mosi = 32*4;
+                spi_trans(HSPI_HOST, trans);
             }
         }
     }
 }
 
-void IRAM_ATTR hspi_event_callback(int event, void *arg)
+void IRAM_ATTR spi_event_callback(int event, void *arg)
 {
-    BaseType_t xHigherPriorityTaskWoken;
+    // BaseType_t xHigherPriorityTaskWoken;
     switch (event) {
-        case HSPI_INIT_EVENT: {
+        case SPI_INIT_EVENT: {
 
         }
         break;
 
-        case HSPI_TRANS_START_EVENT: {
+        case SPI_TRANS_START_EVENT: {
         }
         break;
 
-        case HSPI_TRANS_DONE_EVENT: {
-            xSemaphoreGiveFromISR( lcd_sem, &xHigherPriorityTaskWoken );
-            if (xHigherPriorityTaskWoken == pdTRUE) {
-                taskYIELD();
-            }
+        case SPI_TRANS_DONE_EVENT: {
+            // xSemaphoreGiveFromISR( lcd_sem, &xHigherPriorityTaskWoken );
+            // if (xHigherPriorityTaskWoken == pdTRUE) {
+            //     taskYIELD();
+            // }
         }
         break;
 
-        case HSPI_DEINIT_EVENT: {
+        case SPI_DEINIT_EVENT: {
         }
         break;
     }
@@ -669,26 +677,26 @@ void app_main(void)
     io_conf.pull_up_en = 1;
     gpio_config(&io_conf);
 
-    hspi_config_t hspi_config;
+    spi_config_t spi_config;
     // Load default interface parameters
     // CPOL:0, CPHA:0, BIT_TX_ORDER:0, BIT_RX_ORDER:0, BYTE_TX_ORDER:1, BYTE_TX_ORDER:1, MOSI_EN:1, MISO_EN:1, CS_EN:1
-    hspi_config.interface.val = HSPI_DEFAULT_INTERFACE;
+    spi_config.interface.val = SPI_DEFAULT_INTERFACE;
+    // Load default interrupt enable
+    // READ_BUFFER: false, WRITE_BUFFER: false, READ_STATUS: false, WRITE_STATUS: false, TRANS_DONE: true
+    spi_config.intr_enable.val = SPI_DEFAULT_INTR_ENABLE;
     // Cancel hardware cs
-    hspi_config.interface.cs_en = 0;
-    hspi_config.interface.miso_en = 0;
-    hspi_config.interface.cpol = 1;
-    hspi_config.interface.cpha = 1;
-    // Enable transfer completion interrupt
-    hspi_config.intr_enable_mask = HSPI_INTR_TRANS_DONE;
-    // Set HSPI to master mode
-    hspi_config.mode = HSPI_MASTER_MODE;
-    // Set the HSPI clock frequency division factor
-    hspi_config.clk_div = HSPI_40MHz_DIV;
-    // Load default bitlen parameters
-    hspi_config.bitlen.val = HSPI_DEFAULT_MASTER_BITLEN;
-    // Register HSPI event callback function
-    hspi_config.event_cb = hspi_event_callback;
-    hspi_init(&hspi_config);
+    spi_config.interface.cs_en = 0;
+    spi_config.interface.miso_en = 0;
+    spi_config.interface.cpol = 1;
+    spi_config.interface.cpha = 1;
+    // Set SPI to master mode
+    // 8266 Only support half-duplex
+    spi_config.mode = SPI_MASTER_MODE;
+    // Set the SPI clock frequency division factor
+    spi_config.clk_div = SPI_40MHz_DIV;
+    // Register SPI event callback function
+    spi_config.event_cb = spi_event_callback;
+    spi_init(HSPI_HOST, &spi_config);
 
     lcd_init();
     lcd_clear(BLACK);
