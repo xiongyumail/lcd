@@ -29,22 +29,22 @@ static const char *TAG = "spi_lcd";
 #define LCD_RST_GPIO    15
 #define LCD_PIN_SEL  (1ULL<<LCD_SCL_GPIO) | (1ULL<<LCD_SDA_GPIO) | (1ULL<<LCD_DC_GPIO) | (1ULL<<LCD_RST_GPIO) 
 
-#define BLACK   0x0000    // 黑色      0,     0,     0
-#define NAVY    0x000F    // 深蓝色  0,     0, 127
-#define DGREEN  0x03E0    // 深绿色  0,  127,  0
-#define DCYAN   0x03EF    // 深青色  0,  127, 127           
-#define MAROON  0x7800    // 深红色  127,     0,     0            
-#define PURPLE  0x780F    // 紫色      127,     0, 127            
-#define OLIVE   0x7BE0    // 橄榄绿  127, 127,     0            
-#define LGRAY   0xC618    // 灰白色  192, 192, 192            
-#define DGRAY   0x7BEF    // 深灰色  127, 127, 127            
-#define BLUE    0x001F    // 蓝色      0,     0, 255                
-#define GREEN   0x07E0    // 绿色      0, 255,     0                
-#define CYAN    0x07FF    // 青色      0, 255, 255                
-#define RED     0xF800    // 红色      255,     0,     0            
-#define MAGENTA 0xF81F    // 品红      255,     0, 255            
-#define YELLOW  0xFFE0    // 黄色      255, 255, 0                
-#define WHITE   0xFFFF    // 白色      255, 255, 255        
+#define BLACK   0x0000    // 黑色     0,     0,     0
+#define NAVY    0x000F    // 深蓝色   0,     0, 127
+#define DGREEN  0x03E0    // 深绿色   0, 127, 0
+#define DCYAN   0x03EF    // 深青色   0, 127, 127           
+#define MAROON  0x7800    // 深红色   127,     0,     0            
+#define PURPLE  0x780F    // 紫色     127,     0, 127            
+#define OLIVE   0x7BE0    // 橄榄绿   127, 127,     0            
+#define LGRAY   0xC618    // 灰白色   192, 192, 192            
+#define DGRAY   0x7BEF    // 深灰色   127, 127, 127            
+#define BLUE    0x001F    // 蓝色     0,     0, 255                
+#define GREEN   0x07E0    // 绿色     0, 255,     0                
+#define CYAN    0x07FF    // 青色     0, 255, 255                
+#define RED     0xF800    // 红色     255,     0,     0            
+#define MAGENTA 0xF81F    // 品红     255,     0, 255            
+#define YELLOW  0xFFE0    // 黄色     255, 255, 0                
+#define WHITE   0xFFFF    // 白色     255, 255, 255        
 
 const uint8_t gImage_qq_logo[3200] = { /* 0X00,0X10,0X28,0X00,0X28,0X00,0X01,0X1B, */
 0XDB,0XDE,0X5D,0XEF,0X5D,0XEF,0X7D,0XEF,0X5D,0XEF,0X5D,0XEF,0X5D,0XEF,0X5D,0XEF,
@@ -413,156 +413,146 @@ void lcd_set_index(uint16_t x_start,uint16_t y_start,uint16_t x_end,uint16_t y_e
 }
 
 
-void lcd_write_point(uint16_t x_start,uint16_t y_start,uint16_t color)
+void lcd_draw_point(uint16_t x_start,uint16_t y_start,uint16_t color)
 {
     lcd_set_index(x_start,y_start,x_start+1,y_start+1);
     lcd_write_2byte(color);
+}
+
+//画线函数，使用Bresenham 画线算法
+void lcd_draw_line(uint16_t x0, uint16_t y0,uint16_t x1, uint16_t y1,uint16_t Color)   
+{
+int dx,             // difference in x's
+    dy,             // difference in y's
+    dx2,            // dx,dy * 2
+    dy2, 
+    x_inc,          // amount in pixel space to move during drawing
+    y_inc,          // amount in pixel space to move during drawing
+    error,          // the discriminant i.e. error i.e. decision variable
+    index;          // used for looping    
+
+
+    lcd_set_index(x0,y0,x0,y0);
+    dx = x1-x0;//计算x距离
+    dy = y1-y0;//计算y距离
+
+    if (dx>=0)
+    {
+        x_inc = 1;
+    }
+    else
+    {
+        x_inc = -1;
+        dx    = -dx;  
+    } 
     
+    if (dy>=0)
+    {
+        y_inc = 1;
+    } 
+    else
+    {
+        y_inc = -1;
+        dy    = -dy; 
+    } 
+
+    dx2 = dx << 1;
+    dy2 = dy << 1;
+
+    if (dx > dy)//x距离大于y距离，那么每个x轴上只有一个点，每个y轴上有若干个点
+    {//且线的点数等于x距离，以x轴递增画点
+        // initialize error term
+        error = dy2 - dx; 
+
+        // draw the line
+        for (index=0; index <= dx; index++)//要画的点数不会超过x距离
+        {
+            //画点
+            lcd_draw_point(x0,y0,Color);
+            
+            // test if error has overflowed
+            if (error >= 0) //是否需要增加y坐标值
+            {
+                error-=dx2;
+
+                // move to next line
+                y0+=y_inc;//增加y坐标值
+            } // end if error overflowed
+
+            // adjust the error term
+            error+=dy2;
+
+            // move to the next pixel
+            x0+=x_inc;//x坐标值每次画点后都递增1
+        } // end for
+    } // end if |slope| <= 1
+    else//y轴大于x轴，则每个y轴上只有一个点，x轴若干个点
+    {//以y轴为递增画点
+        // initialize error term
+        error = dx2 - dy; 
+
+        // draw the line
+        for (index=0; index <= dy; index++)
+        {
+            // set the pixel
+            lcd_draw_point(x0,y0,Color);
+
+            // test if error overflowed
+            if (error >= 0)
+            {
+                error-=dy2;
+
+                // move to next line
+                x0+=x_inc;
+            } // end if error overflowed
+
+            // adjust the error term
+            error+=dx2;
+
+            // move to the next pixel
+            y0+=y_inc;
+        } // end for
+    } // end else |slope| > 1
 }
 
+void lcd_draw_circle(uint16_t X,uint16_t Y,uint16_t R,uint16_t fc) 
+{//Bresenham算法 
+    unsigned short  a,b; 
+    int c; 
+    a=0; 
+    b=R; 
+    c=3-2*R; 
+    while (a<b) 
+    { 
+        lcd_draw_point(X+a,Y+b,fc);     //        7 
+        lcd_draw_point(X-a,Y+b,fc);     //        6 
+        lcd_draw_point(X+a,Y-b,fc);     //        2 
+        lcd_draw_point(X-a,Y-b,fc);     //        3 
+        lcd_draw_point(X+b,Y+a,fc);     //        8 
+        lcd_draw_point(X-b,Y+a,fc);     //        5 
+        lcd_draw_point(X+b,Y-a,fc);     //        1 
+        lcd_draw_point(X-b,Y-a,fc);     //        4 
 
-void lcd_draw_line(uint16_t x1,uint16_t y1,uint16_t x2,uint16_t y2,uint16_t color)
-{
-    int dx,dy,e;
-    dx=x2-x1; 
-    dy=y2-y1;
-    if(dx>=0)
-    {
-        if(dy >= 0) // dy>=0
-        {
-            if(dx>=dy) // 1/8 octant
-            {
-                e=dy-dx/2;
-                while(x1<=x2)
-                {
-                    lcd_write_point(x1,y1,color);
-                    if(e>0){y1+=1;e-=dx;}   
-                    x1+=1;
-                    e+=dy;
-                }
-            }
-            else        // 2/8 octant
-            {
-                e=dx-dy/2;
-                while(y1<=y2)
-                {
-                    lcd_write_point(x1,y1,color);
-                    if(e>0){x1+=1;e-=dy;}   
-                    y1+=1;
-                    e+=dx;
-                }
-            }
-        }
-        else           // dy<0
-        {
-            dy=-dy;   // dy=abs(dy)
-            if(dx>=dy) // 8/8 octant
-            {
-                e=dy-dx/2;
-                while(x1<=x2)
-                {
-                    lcd_write_point(x1,y1,color);
-                    if(e>0){y1-=1;e-=dx;}   
-                    x1+=1;
-                    e+=dy;
-                }
-            }
-            else        // 7/8 octant
-            {
-                e=dx-dy/2;
-                while(y1>=y2)
-                {
-                    lcd_write_point(x1,y1,color);
-                    if(e>0){x1+=1;e-=dy;}   
-                    y1-=1;
-                    e+=dx;
-                }
-            }
-        }   
-    }
-    else //dx<0
-    {
-        dx=-dx;     //dx=abs(dx)
-        if(dy >= 0) // dy>=0
-        {
-            if(dx>=dy) // 4/8 octant
-            {
-                e=dy-dx/2;
-                while(x1>=x2)
-                {
-                    lcd_write_point(x1,y1,color);
-                    if(e>0){y1+=1;e-=dx;}   
-                    x1-=1;
-                    e+=dy;
-                }
-            }
-            else        // 3/8 octant
-            {
-                e=dx-dy/2;
-                while(y1<=y2)
-                {
-                    lcd_write_point(x1,y1,color);
-                    if(e>0){x1-=1;e-=dy;}   
-                    y1+=1;
-                    e+=dx;
-                }
-            }
-        }
-        else           // dy<0
-        {
-            dy=-dy;   // dy=abs(dy)
-            if(dx>=dy) // 5/8 octant
-            {
-                e=dy-dx/2;
-                while(x1>=x2)
-                {
-                    lcd_write_point(x1,y1,color);
-                    if(e>0){y1-=1;e-=dx;}   
-                    x1-=1;
-                    e+=dy;
-                }
-            }
-            else        // 6/8 octant
-            {
-                e=dx-dy/2;
-                while(y1>=y2)
-                {
-                    lcd_write_point(x1,y1,color);
-                    if(e>0){x1-=1;e-=dy;}   
-                    y1-=1;
-                    e+=dx;
-                }
-            }
-        }   
-    }
-}
-
-void lcd_draw_circle(uint16_t x, uint16_t y, uint16_t r, uint16_t color)
-{
-    int a, b, num;
-    a = 0;
-    b = r;
-    while(2 * b * b >= r * r)          // 1/8圆即可
-    {
-        lcd_write_point(x + a, y - b,color); // 0~1
-        lcd_write_point(x - a, y - b,color); // 0~7
-        lcd_write_point(x - a, y + b,color); // 4~5
-        lcd_write_point(x + a, y + b,color); // 4~3
- 
-        lcd_write_point(x + b, y + a,color); // 2~3
-        lcd_write_point(x + b, y - a,color); // 2~1
-        lcd_write_point(x - b, y - a,color); // 6~7
-        lcd_write_point(x - b, y + a,color); // 6~5
-        
-        a++;
-        num = (a * a + b * b) - r*r;
-        if(num > 0)
-        {
-            b--;
-            a--;
-        }
-    }
-}
+        if(c<0) c=c+4*a+6; 
+        else 
+        { 
+            c=c+4*(a-b)+10; 
+            b-=1; 
+        } 
+       a+=1; 
+    } 
+    if (a==b) 
+    { 
+        lcd_draw_point(X+a,Y+b,fc); 
+        lcd_draw_point(X+a,Y+b,fc); 
+        lcd_draw_point(X+a,Y-b,fc); 
+        lcd_draw_point(X-a,Y-b,fc); 
+        lcd_draw_point(X+b,Y+a,fc); 
+        lcd_draw_point(X-b,Y+a,fc); 
+        lcd_draw_point(X+b,Y-a,fc); 
+        lcd_draw_point(X-b,Y-a,fc); 
+    } 
+} 
 
 void lcd_clear(uint16_t color)
 {
@@ -581,17 +571,6 @@ void lcd_clear(uint16_t color)
         spi_trans(HSPI_HOST, trans);
     }
 }
-
-// void lcd_clear(uint16_t color)
-// {
-//     uint16_t i,j;      
-//     lcd_set_index(0,0,240-1,240-1);
-//     for (i=0;i<240;i++) {
-//       for (j=0;j<240;j++) {
-//           lcd_write_2byte(color);             
-//       }
-//     }
-// }
 
 //在指定区域内填充指定颜色
 //区域大小:
@@ -658,7 +637,6 @@ void IRAM_ATTR spi_event_callback(int event, void *arg)
         }
         break;
     }
-    
 }
 
 void app_main(void)
@@ -700,10 +678,10 @@ void app_main(void)
 
     lcd_init();
     lcd_clear(BLACK);
-    lcd_write_point(10,10,YELLOW);
-    lcd_fill(20,20,120,120,RED);
-    lcd_fill(180,180,220,220,CYAN);
-    lcd_draw_circle(120, 120, 120, YELLOW);
+    lcd_draw_point(10-1,10-1,YELLOW);
+    lcd_fill(20-1,20-1,120-1,120-1,RED);
+    lcd_fill(180-1,180-1,220-1,220-1,CYAN);
+    lcd_draw_circle(120-1, 120-1, 120-1, YELLOW);
     lcd_draw_line(0,0,240-1,240-1,MAGENTA);
     vTaskDelay(2000 / portTICK_RATE_MS);
     while(1) {

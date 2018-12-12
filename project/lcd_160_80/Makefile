@@ -3,7 +3,7 @@
 # project subdirectory.
 #
 
-PROJECT_NAME := hw_timer
+PROJECT_NAME := lcd
 
 include $(IDF_PATH)/make/project.mk
 
