@@ -244,8 +244,7 @@ const uint8_t gImage_qq_logo[3200] = { /* 0X00,0X10,0X28,0X00,0X28,0X00,0X01,0X1
 extern const uint8_t GB_FON_start[]   asm("_binary_GB_FON_start");
 extern const uint8_t GB_FON_end[]     asm("_binary_GB_FON_end");
 
-SemaphoreHandle_t lcd_sem;
-uint32_t mosi_bitlen = 0;
+SemaphoreHandle_t spi_done_sem;
 
 void lcd_delay_ms(uint32_t time)
 {
@@ -260,6 +259,8 @@ void lcd_write_cmd(uint8_t data)
     trans.mosi = &buf;
     trans.bits.mosi = 8;
 
+    // Prevent data from being transferred yet, DC is pulled low
+    xSemaphoreTake(spi_done_sem, portMAX_DELAY);
     gpio_set_level(LCD_DC_GPIO, 0);
     spi_trans(HSPI_HOST, trans);
 }
@@ -307,8 +308,6 @@ void lcd_rst()
 
 void lcd_init()
 {
-    lcd_sem = xSemaphoreCreateBinary();
-    xSemaphoreGive(lcd_sem);
     lcd_rst();//lcd_rst before LCD Init.
 
     lcd_write_cmd(0x11);//Sleep exit
@@ -635,7 +634,7 @@ void lcd_clear(uint16_t color)
     lcd_set_index(0, 0, 80 - 1, 160 - 1);
     gpio_set_level(LCD_DC_GPIO, 1);
 
-    for (i = 0; i <= 400; i++) {
+    for (i = 0; i < 400; i++) {
         spi_trans(HSPI_HOST, trans);
     }
 }
@@ -684,7 +683,7 @@ void lcd_show_qq(const uint8_t *p) //显示40*40 QQ图片
 
 void IRAM_ATTR spi_event_callback(int event, void *arg)
 {
-    // BaseType_t xHigherPriorityTaskWoken;
+    BaseType_t xHigherPriorityTaskWoken;
     switch (event) {
         case SPI_INIT_EVENT: {
 
@@ -696,10 +695,10 @@ void IRAM_ATTR spi_event_callback(int event, void *arg)
         break;
 
         case SPI_TRANS_DONE_EVENT: {
-            // xSemaphoreGiveFromISR( lcd_sem, &xHigherPriorityTaskWoken );
-            // if (xHigherPriorityTaskWoken == pdTRUE) {
-            //     taskYIELD();
-            // }
+            xSemaphoreGiveFromISR(spi_done_sem, &xHigherPriorityTaskWoken );
+            if (xHigherPriorityTaskWoken == pdTRUE) {
+                taskYIELD();
+            }
         }
         break;
 
@@ -716,6 +715,9 @@ void app_main(void)
     ESP_LOGI(TAG, "init hspi");
 
     rtc_clk_cpu_freq_set(RTC_CPU_FREQ_160M);
+
+    spi_done_sem = xSemaphoreCreateBinary();
+    xSemaphoreGive(spi_done_sem);
 
     gpio_config_t io_conf;
     io_conf.intr_type = GPIO_INTR_DISABLE;

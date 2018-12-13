@@ -8,7 +8,6 @@
 */
 
 #include <stdio.h>
-
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -249,12 +248,21 @@ const uint8_t gImage_qq_logo[3200] = { /* 0X00,0X10,0X28,0X00,0X28,0X00,0X01,0X1
 0XE4,0XD2,0X6A,0XC3,0XB6,0XD5,0XFF,0XFF,0XFF,0XFF,0XFF,0XFF,0XFF,0XFF,0XFF,0XFF,
 };
 
-SemaphoreHandle_t lcd_sem;
-uint32_t mosi_bitlen = 0;
+extern const uint8_t GB_FON_start[]   asm("_binary_GB_FON_start");
+extern const uint8_t GB_FON_end[]     asm("_binary_GB_FON_end");
+
+SemaphoreHandle_t spi_done_sem;
 
 void lcd_delay_ms(uint32_t time)
 {
     vTaskDelay(time /portTICK_RATE_MS);
+}
+
+void lcd_set_dc(uint8_t dc)
+{
+    // Prevent data from being transferred yet, DC is pulled low
+    xSemaphoreTake(spi_done_sem, portMAX_DELAY);
+    gpio_set_level(LCD_DC_GPIO, dc);
 }
 
 //向液晶屏写一个8位指令
@@ -265,7 +273,7 @@ void lcd_write_cmd(uint8_t data)
     trans.mosi = &buf;
     trans.bits.mosi = 8;
     
-    gpio_set_level(LCD_DC_GPIO, 0);
+    lcd_set_dc(0);
     spi_trans(HSPI_HOST, trans);
 }
 
@@ -277,7 +285,7 @@ void lcd_write_byte(uint8_t data)
     trans.mosi = &buf;
     trans.bits.mosi = 8;
 
-    gpio_set_level(LCD_DC_GPIO, 1);
+    lcd_set_dc(1);
     spi_trans(HSPI_HOST, trans);
 }
 //向液晶屏写一个16位数据
@@ -288,7 +296,7 @@ void lcd_write_2byte(uint16_t data)
     trans.mosi = &buf;
     trans.bits.mosi = 16;
 
-    gpio_set_level(LCD_DC_GPIO, 1);
+    lcd_set_dc(1);
     spi_trans(HSPI_HOST, trans);
 }
 
@@ -298,7 +306,7 @@ void lcd_write_word(uint32_t data)
     trans.mosi = &data;
     trans.bits.mosi = 32;
 
-    gpio_set_level(LCD_DC_GPIO, 1);
+    lcd_set_dc(1);
     spi_trans(HSPI_HOST, trans);
 }
     
@@ -312,8 +320,6 @@ void lcd_rst()
 
 void lcd_init()
 {    
-    lcd_sem = xSemaphoreCreateBinary();
-    xSemaphoreGive( lcd_sem );
     lcd_rst();//lcd_rst before LCD Init.
     //    lcd_write_cmd(0x11);//Sleep exit 
     lcd_delay_ms (120);
@@ -566,8 +572,8 @@ void lcd_clear(uint16_t color)
         data[i] = (color<<16) | color;
     }
     lcd_set_index(0,0,240-1,240-1);
-    gpio_set_level(LCD_DC_GPIO, 1);
-    for (i=0;i<=1800;i++) {
+    lcd_set_dc(1);
+    for (i=0;i<1800;i++) {
         spi_trans(HSPI_HOST, trans);
     }
 }
@@ -594,7 +600,7 @@ void lcd_show_qq(const uint8_t *p) //显示40*40 QQ图片
     uint32_t data_buf[20];
     spi_trans_t trans = {0};
     lcd_set_index(0,0,240-1,240-1); // 按顺序填充数据，能够最大利用带宽
-    gpio_set_level(LCD_DC_GPIO, 1);
+    lcd_set_dc(1);
     for (z=0;z<6;z++) {
         for (y=0;y<40;y++) {
             for (x=0;x<20;x++) {
@@ -612,9 +618,52 @@ void lcd_show_qq(const uint8_t *p) //显示40*40 QQ图片
     }
 }
 
+void lcd_draw_cn(uint8_t x_start, uint8_t y_start, uint16_t color, uint8_t *chr)
+{
+    int x, y, z;
+    uint32_t data[16];
+    uint8_t chr_raw[16];
+    printf("0x%4x\n", chr[0]<<8|chr[1]);
+    // 在ASCII中，0xa0表示汉字的开始。
+    uint32_t pos = ((chr[0] - 0xA1)*94 + (chr[1] - 0xA1))*2*16;//GB.FON
+    spi_trans_t trans = {0};
+    trans.mosi = data;
+    trans.bits.mosi = 32*16;
+    // pos/32 为GB.TXT中的序号
+    lcd_set_index(x_start, y_start, x_start+16-1, y_start+16-1);
+    lcd_set_dc(1);
+    for (x=0; x<16; x++) {
+        chr_raw[x] = GB_FON_start[pos+x];
+    }
+
+    for (z=0; z<4; z++) {
+        for (y=0; y<2; y++) {
+            for (x=0; x<8; x++) {
+                data[y*8+x]  = chr_raw[x*2]&(0x01<<(y+z*2)) ? color<<16 : 0;
+                data[y*8+x] |= chr_raw[x*2+1]&(0x01<<(y+z*2)) ? color : 0;
+            }
+        }
+        spi_trans(HSPI_HOST, trans);
+    }
+
+    for (x=0; x<16; x++) {
+        chr_raw[x] = GB_FON_start[pos+16+x];
+    }
+
+    for (z=0; z<4; z++) {
+        for (y=0; y<2; y++) {
+            for (x=0; x<8; x++) {
+                data[y*8+x]  = chr_raw[x*2]&(0x01<<(y+z*2)) ? color<<16 : 0;
+                data[y*8+x] |= chr_raw[x*2+1]&(0x01<<(y+z*2)) ? color : 0;
+            }
+        }
+        spi_trans(HSPI_HOST, trans);
+    }
+}
+
 void IRAM_ATTR spi_event_callback(int event, void *arg)
 {
-    // BaseType_t xHigherPriorityTaskWoken;
+    BaseType_t xHigherPriorityTaskWoken;
     switch (event) {
         case SPI_INIT_EVENT: {
 
@@ -626,10 +675,10 @@ void IRAM_ATTR spi_event_callback(int event, void *arg)
         break;
 
         case SPI_TRANS_DONE_EVENT: {
-            // xSemaphoreGiveFromISR( lcd_sem, &xHigherPriorityTaskWoken );
-            // if (xHigherPriorityTaskWoken == pdTRUE) {
-            //     taskYIELD();
-            // }
+            xSemaphoreGiveFromISR(spi_done_sem, &xHigherPriorityTaskWoken );
+            if (xHigherPriorityTaskWoken == pdTRUE) {
+                taskYIELD();
+            }
         }
         break;
 
@@ -646,6 +695,9 @@ void app_main(void)
     ESP_LOGI(TAG, "init hspi");
 
     rtc_clk_cpu_freq_set(RTC_CPU_FREQ_160M);
+
+    spi_done_sem = xSemaphoreCreateBinary();
+    xSemaphoreGive(spi_done_sem);
 
     gpio_config_t io_conf;
     io_conf.intr_type = GPIO_INTR_DISABLE;
@@ -671,30 +723,32 @@ void app_main(void)
     // 8266 Only support half-duplex
     spi_config.mode = SPI_MASTER_MODE;
     // Set the SPI clock frequency division factor
-    spi_config.clk_div = SPI_40MHz_DIV;
+    spi_config.clk_div = SPI_10MHz_DIV;
     // Register SPI event callback function
     spi_config.event_cb = spi_event_callback;
     spi_init(HSPI_HOST, &spi_config);
 
     lcd_init();
     lcd_clear(BLACK);
-    lcd_draw_point(10-1,10-1,YELLOW);
-    lcd_fill(20-1,20-1,120-1,120-1,RED);
-    lcd_fill(180-1,180-1,220-1,220-1,CYAN);
-    lcd_draw_circle(120-1, 120-1, 120-1, YELLOW);
-    lcd_draw_line(0,0,240-1,240-1,MAGENTA);
-    vTaskDelay(2000 / portTICK_RATE_MS);
-    while(1) {
-        lcd_clear(test_color[x]);
-        vTaskDelay(1000 / portTICK_RATE_MS);
-        x++;
-        if (x == 16) {
-            lcd_show_qq(gImage_qq_logo);
-            vTaskDelay(1000 / portTICK_RATE_MS);
-            x = 0;
-        }
-    }
+    // lcd_draw_point(10-1,10-1,YELLOW);
+    // lcd_fill(20-1,20-1,120-1,120-1,RED);
+    // lcd_fill(180-1,180-1,220-1,220-1,CYAN);
+    // lcd_draw_circle(120-1, 120-1, 120-1, YELLOW);
+    // lcd_draw_line(0,0,240-1,240-1,MAGENTA);
+    // vTaskDelay(2000 / portTICK_RATE_MS);
+    // while(1) {
+    //     lcd_clear(test_color[x]);
+    //     vTaskDelay(1000 / portTICK_RATE_MS);
+    //     x++;
+    //     if (x == 16) {
+    //         lcd_show_qq(gImage_qq_logo);
+    //         vTaskDelay(1000 / portTICK_RATE_MS);
+    //         x = 0;
+    //     }
+    // }
     //lcd_show_qq(gImage_qq_logo);
+    uint8_t cn[2] = "熊";
+    lcd_draw_cn(120-1, 120-1, WHITE, cn);
 }
 
 
