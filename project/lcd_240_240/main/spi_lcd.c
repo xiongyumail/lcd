@@ -994,9 +994,11 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
             ESP_LOGI(TAG, "MQTT_EVENT_DATA");
             printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
             printf("DATA=%.*s\r\n", event->data_len, event->data);
-            if(strstr(event->data, "start ota")) {
+            if(strstr(event->data, "ota")) {
                 ESP_LOGI(TAG, "Free memory: %d bytes", esp_get_free_heap_size());
                 xTaskCreate(&simple_ota_example_task, "ota_example_task", 8192, NULL, 5, NULL);
+            } else if (strstr(event->data, "reboot")) {
+                esp_restart();
             }
             break;
         case MQTT_EVENT_ERROR:
