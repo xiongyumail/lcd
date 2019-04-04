@@ -19,7 +19,7 @@ static const char *TAG = "spi_lcd";
 #define LCD_SDA_GPIO    13
 #define LCD_DC_GPIO     12
 #define LCD_RST_GPIO    15
-#define LCD_PIN_SEL  (1ULL<<LCD_SCL_GPIO) | (1ULL<<LCD_SDA_GPIO) | (1ULL<<LCD_DC_GPIO) | (1ULL<<LCD_RST_GPIO)
+#define LCD_PIN_SEL  (1ULL<<LCD_DC_GPIO) | (1ULL<<LCD_RST_GPIO)
 
 #define BLACK   0x0000    // 黑色     0,     0,     0
 #define NAVY    0x000F    // 深蓝色   0,     0, 127
@@ -244,11 +244,16 @@ const uint8_t gImage_qq_logo[3200] = { /* 0X00,0X10,0X28,0X00,0X28,0X00,0X01,0X1
 extern const uint8_t GB_FON_start[]   asm("_binary_GB_FON_start");
 extern const uint8_t GB_FON_end[]     asm("_binary_GB_FON_end");
 
-SemaphoreHandle_t spi_done_sem;
+uint8_t lcd_dc_level = 0;
 
 void lcd_delay_ms(uint32_t time)
 {
     vTaskDelay(time / portTICK_RATE_MS);
+}
+
+void lcd_set_dc(uint8_t dc)
+{
+    lcd_dc_level = dc;
 }
 
 //向液晶屏写一个8位指令
@@ -259,9 +264,7 @@ void lcd_write_cmd(uint8_t data)
     trans.mosi = &buf;
     trans.bits.mosi = 8;
 
-    // Prevent data from being transferred yet, DC is pulled low
-    xSemaphoreTake(spi_done_sem, portMAX_DELAY);
-    gpio_set_level(LCD_DC_GPIO, 0);
+    lcd_set_dc(0);
     spi_trans(HSPI_HOST, trans);
 }
 
@@ -273,7 +276,7 @@ void lcd_write_byte(uint8_t data)
     trans.mosi = &buf;
     trans.bits.mosi = 8;
 
-    gpio_set_level(LCD_DC_GPIO, 1);
+    lcd_set_dc(1);
     spi_trans(HSPI_HOST, trans);
 }
 //向液晶屏写一个16位数据
@@ -284,7 +287,7 @@ void lcd_write_2byte(uint16_t data)
     trans.mosi = &buf;
     trans.bits.mosi = 16;
 
-    gpio_set_level(LCD_DC_GPIO, 1);
+    lcd_set_dc(1);
     spi_trans(HSPI_HOST, trans);
 }
 
@@ -294,7 +297,7 @@ void lcd_write_word(uint32_t data)
     trans.mosi = &data;
     trans.bits.mosi = 32;
 
-    gpio_set_level(LCD_DC_GPIO, 1);
+    lcd_set_dc(1);
     spi_trans(HSPI_HOST, trans);
 }
 
@@ -632,7 +635,7 @@ void lcd_clear(uint16_t color)
     }
 
     lcd_set_index(0, 0, 80 - 1, 160 - 1);
-    gpio_set_level(LCD_DC_GPIO, 1);
+    lcd_set_dc(1);
 
     for (i = 0; i < 400; i++) {
         spi_trans(HSPI_HOST, trans);
@@ -661,7 +664,7 @@ void lcd_show_qq(const uint8_t *p) //显示40*40 QQ图片
     uint32_t data_buf[20];
     spi_trans_t trans = {0};
     lcd_set_index(0, 0, 80 - 1, 160 - 1); // 按顺序填充数据，能够最大利用带宽
-    gpio_set_level(LCD_DC_GPIO, 1);
+    lcd_set_dc(1);
 
     for (z = 0; z < 4; z++) {
         for (y = 0; y < 40; y++) {
@@ -683,7 +686,6 @@ void lcd_show_qq(const uint8_t *p) //显示40*40 QQ图片
 
 void IRAM_ATTR spi_event_callback(int event, void *arg)
 {
-    BaseType_t xHigherPriorityTaskWoken;
     switch (event) {
         case SPI_INIT_EVENT: {
 
@@ -691,14 +693,11 @@ void IRAM_ATTR spi_event_callback(int event, void *arg)
         break;
 
         case SPI_TRANS_START_EVENT: {
+            gpio_set_level(LCD_DC_GPIO, lcd_dc_level);
         }
         break;
 
         case SPI_TRANS_DONE_EVENT: {
-            xSemaphoreGiveFromISR(spi_done_sem, &xHigherPriorityTaskWoken );
-            if (xHigherPriorityTaskWoken == pdTRUE) {
-                taskYIELD();
-            }
         }
         break;
 
@@ -716,9 +715,6 @@ void app_main(void)
 
     rtc_clk_cpu_freq_set(RTC_CPU_FREQ_160M);
 
-    spi_done_sem = xSemaphoreCreateBinary();
-    xSemaphoreGive(spi_done_sem);
-
     gpio_config_t io_conf;
     io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.mode = GPIO_MODE_OUTPUT;
@@ -729,11 +725,11 @@ void app_main(void)
 
     spi_config_t spi_config;
     // Load default interface parameters
-    // CPOL:0, CPHA:0, BIT_TX_ORDER:0, BIT_RX_ORDER:0, BYTE_TX_ORDER:1, BYTE_TX_ORDER:1, MOSI_EN:1, MISO_EN:1, CS_EN:1
+    // CS_EN:1, MISO_EN:1, MOSI_EN:1, BYTE_TX_ORDER:1, BYTE_TX_ORDER:1, BIT_RX_ORDER:0, BIT_TX_ORDER:0, CPHA:0, CPOL:0
     spi_config.interface.val = SPI_DEFAULT_INTERFACE;
     // Load default interrupt enable
-    // READ_BUFFER: false, WRITE_BUFFER: false, READ_STATUS: false, WRITE_STATUS: false, TRANS_DONE: true
-    spi_config.intr_enable.val = SPI_DEFAULT_INTR_ENABLE;
+    // TRANS_DONE: true, WRITE_STATUS: false, READ_STATUS: false, WRITE_BUFFER: false, READ_BUFFER: false
+    spi_config.intr_enable.val = SPI_MASTER_DEFAULT_INTR_ENABLE;
     // Cancel hardware cs
     spi_config.interface.cs_en = 0;
     spi_config.interface.miso_en = 0;

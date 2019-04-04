@@ -1,10 +1,10 @@
 # project files
-add_path.sh
 *sdkconfig
 *sdkconfig.old
 *build
 *xtensa-lx106-elf
 *xtensa-esp32-elf
+*vscode
 
 # C++ objects and libs
 *.slo

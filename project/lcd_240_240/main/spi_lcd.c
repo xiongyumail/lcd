@@ -12,21 +12,45 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "freertos/event_groups.h"
 #include "esp8266/gpio_struct.h"
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_libc.h"
-
+#include "esp_wifi.h"
+#include "esp_event_loop.h"
+#include "esp_ota_ops.h"
+#include "esp_http_client.h"
+#include "esp_https_ota.h"
 #include "driver/gpio.h"
 #include "driver/spi.h"
 #include "esp8266/spi_struct.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "mqtt_client.h"
 
 static const char *TAG = "spi_lcd";
+
+#if CONFIG_SSL_USING_WOLFSSL
+#include "lwip/apps/sntp.h"
+#endif
+
+extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
+extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
+
+/* FreeRTOS event group to signal when we are connected & ready to make a request */
+static EventGroupHandle_t wifi_event_group;
+
+/* The event group allows multiple bits for each event,
+   but we only care about one event - are we connected
+   to the AP with an IP? */
+const int CONNECTED_BIT = BIT0;
+
 #define LCD_SCL_GPIO    14
 #define LCD_SDA_GPIO    13
 #define LCD_DC_GPIO     12
 #define LCD_RST_GPIO    15
-#define LCD_PIN_SEL  (1ULL<<LCD_SCL_GPIO) | (1ULL<<LCD_SDA_GPIO) | (1ULL<<LCD_DC_GPIO) | (1ULL<<LCD_RST_GPIO) 
+#define LCD_PIN_SEL  (1ULL<<LCD_DC_GPIO) | (1ULL<<LCD_RST_GPIO) 
 
 #define BLACK   0x0000    // 黑色     0,     0,     0
 #define NAVY    0x000F    // 深蓝色   0,     0, 127
@@ -251,7 +275,7 @@ const uint8_t gImage_qq_logo[3200] = { /* 0X00,0X10,0X28,0X00,0X28,0X00,0X01,0X1
 extern const uint8_t GB_FON_start[]   asm("_binary_GB_FON_start");
 extern const uint8_t GB_FON_end[]     asm("_binary_GB_FON_end");
 
-SemaphoreHandle_t spi_done_sem;
+uint8_t lcd_dc_level = 0;
 
 void lcd_delay_ms(uint32_t time)
 {
@@ -260,9 +284,7 @@ void lcd_delay_ms(uint32_t time)
 
 void lcd_set_dc(uint8_t dc)
 {
-    // Prevent data from being transferred yet, DC is pulled low
-    xSemaphoreTake(spi_done_sem, portMAX_DELAY);
-    gpio_set_level(LCD_DC_GPIO, dc);
+    lcd_dc_level = dc;
 }
 
 //向液晶屏写一个8位指令
@@ -618,12 +640,16 @@ void lcd_show_qq(const uint8_t *p) //显示40*40 QQ图片
     }
 }
 
-void lcd_draw_cn(uint8_t x_start, uint8_t y_start, uint16_t color, uint8_t *chr)
+void lcd_draw_char(uint8_t x_start, uint8_t y_start, uint16_t color_front, uint16_t color_back, uint16_t gbk)
 {
+    if (gbk < 0xA1A0) {
+        return;
+    }
     int x, y, z;
     uint32_t data[16];
     uint8_t chr_raw[16];
-    printf("0x%4x\n", chr[0]<<8|chr[1]);
+    uint8_t chr[2] = {(gbk>>8)&0xFF, gbk&0xFF};
+
     // 在ASCII中，0xa0表示汉字的开始。
     uint32_t pos = ((chr[0] - 0xA1)*94 + (chr[1] - 0xA1))*2*16;//GB.FON
     spi_trans_t trans = {0};
@@ -639,8 +665,8 @@ void lcd_draw_cn(uint8_t x_start, uint8_t y_start, uint16_t color, uint8_t *chr)
     for (z=0; z<4; z++) {
         for (y=0; y<2; y++) {
             for (x=0; x<8; x++) {
-                data[y*8+x]  = chr_raw[x*2]&(0x01<<(y+z*2)) ? color<<16 : 0;
-                data[y*8+x] |= chr_raw[x*2+1]&(0x01<<(y+z*2)) ? color : 0;
+                data[y*8+x]  = chr_raw[x*2]&(0x01<<(y+z*2)) ? color_front<<16 : color_back<<16;
+                data[y*8+x] |= chr_raw[x*2+1]&(0x01<<(y+z*2)) ? color_front : color_back;
             }
         }
         spi_trans(HSPI_HOST, trans);
@@ -653,17 +679,31 @@ void lcd_draw_cn(uint8_t x_start, uint8_t y_start, uint16_t color, uint8_t *chr)
     for (z=0; z<4; z++) {
         for (y=0; y<2; y++) {
             for (x=0; x<8; x++) {
-                data[y*8+x]  = chr_raw[x*2]&(0x01<<(y+z*2)) ? color<<16 : 0;
-                data[y*8+x] |= chr_raw[x*2+1]&(0x01<<(y+z*2)) ? color : 0;
+                data[y*8+x]  = chr_raw[x*2]&(0x01<<(y+z*2)) ? color_front<<16 : color_back<<16;
+                data[y*8+x] |= chr_raw[x*2+1]&(0x01<<(y+z*2)) ? color_front : color_back;
             }
         }
         spi_trans(HSPI_HOST, trans);
     }
 }
 
+void lcd_draw_string(uint8_t x_start, uint8_t y_start, uint16_t color_front, uint16_t color_back, uint16_t *gbk)
+{
+    int i = 0;
+    int x = 0, y = 0;
+    while (gbk[i] != 0) {
+        lcd_draw_char(x_start + x*16, y_start + y*16, color_front, color_back, *(gbk + i));
+        i++;
+        x++;
+        if (x >= 240/16) {
+            y++;
+            x = 0;
+        }
+    }
+}
+
 void IRAM_ATTR spi_event_callback(int event, void *arg)
 {
-    BaseType_t xHigherPriorityTaskWoken;
     switch (event) {
         case SPI_INIT_EVENT: {
 
@@ -671,14 +711,11 @@ void IRAM_ATTR spi_event_callback(int event, void *arg)
         break;
 
         case SPI_TRANS_START_EVENT: {
+            gpio_set_level(LCD_DC_GPIO, lcd_dc_level);
         }
         break;
 
         case SPI_TRANS_DONE_EVENT: {
-            xSemaphoreGiveFromISR(spi_done_sem, &xHigherPriorityTaskWoken );
-            if (xHigherPriorityTaskWoken == pdTRUE) {
-                taskYIELD();
-            }
         }
         break;
 
@@ -688,16 +725,13 @@ void IRAM_ATTR spi_event_callback(int event, void *arg)
     }
 }
 
-void app_main(void)
+void lcd_task(void *arg)
 {
     uint16_t test_color[16] = {BLACK, NAVY, DGREEN, DCYAN, MAROON, PURPLE, OLIVE, LGRAY, DGRAY, BLUE, GREEN, CYAN, RED, MAGENTA, YELLOW, WHITE};
     int x = 0;
     ESP_LOGI(TAG, "init hspi");
 
     rtc_clk_cpu_freq_set(RTC_CPU_FREQ_160M);
-
-    spi_done_sem = xSemaphoreCreateBinary();
-    xSemaphoreGive(spi_done_sem);
 
     gpio_config_t io_conf;
     io_conf.intr_type = GPIO_INTR_DISABLE;
@@ -709,11 +743,11 @@ void app_main(void)
 
     spi_config_t spi_config;
     // Load default interface parameters
-    // CPOL:0, CPHA:0, BIT_TX_ORDER:0, BIT_RX_ORDER:0, BYTE_TX_ORDER:1, BYTE_TX_ORDER:1, MOSI_EN:1, MISO_EN:1, CS_EN:1
+    // CS_EN:1, MISO_EN:1, MOSI_EN:1, BYTE_TX_ORDER:1, BYTE_TX_ORDER:1, BIT_RX_ORDER:0, BIT_TX_ORDER:0, CPHA:0, CPOL:0
     spi_config.interface.val = SPI_DEFAULT_INTERFACE;
     // Load default interrupt enable
-    // READ_BUFFER: false, WRITE_BUFFER: false, READ_STATUS: false, WRITE_STATUS: false, TRANS_DONE: true
-    spi_config.intr_enable.val = SPI_DEFAULT_INTR_ENABLE;
+    // TRANS_DONE: true, WRITE_STATUS: false, READ_STATUS: false, WRITE_BUFFER: false, READ_BUFFER: false
+    spi_config.intr_enable.val = SPI_MASTER_DEFAULT_INTR_ENABLE;
     // Cancel hardware cs
     spi_config.interface.cs_en = 0;
     spi_config.interface.miso_en = 0;
@@ -723,32 +757,293 @@ void app_main(void)
     // 8266 Only support half-duplex
     spi_config.mode = SPI_MASTER_MODE;
     // Set the SPI clock frequency division factor
-    spi_config.clk_div = SPI_10MHz_DIV;
+    spi_config.clk_div = SPI_40MHz_DIV;
     // Register SPI event callback function
     spi_config.event_cb = spi_event_callback;
     spi_init(HSPI_HOST, &spi_config);
 
     lcd_init();
     lcd_clear(BLACK);
-    // lcd_draw_point(10-1,10-1,YELLOW);
-    // lcd_fill(20-1,20-1,120-1,120-1,RED);
-    // lcd_fill(180-1,180-1,220-1,220-1,CYAN);
-    // lcd_draw_circle(120-1, 120-1, 120-1, YELLOW);
-    // lcd_draw_line(0,0,240-1,240-1,MAGENTA);
-    // vTaskDelay(2000 / portTICK_RATE_MS);
-    // while(1) {
-    //     lcd_clear(test_color[x]);
-    //     vTaskDelay(1000 / portTICK_RATE_MS);
-    //     x++;
-    //     if (x == 16) {
-    //         lcd_show_qq(gImage_qq_logo);
-    //         vTaskDelay(1000 / portTICK_RATE_MS);
-    //         x = 0;
-    //     }
-    // }
-    //lcd_show_qq(gImage_qq_logo);
-    uint8_t cn[2] = "熊";
-    lcd_draw_cn(120-1, 120-1, WHITE, cn);
+    lcd_draw_point(10-1,10-1,YELLOW);
+    lcd_fill(20-1,20-1,120-1,120-1,RED);
+    lcd_fill(180-1,180-1,220-1,220-1,CYAN);
+    lcd_draw_circle(120-1, 120-1, 120-1, YELLOW);
+    lcd_draw_line(0,0,240-1,240-1,MAGENTA);
+    vTaskDelay(2000 / portTICK_RATE_MS);
+    while(1) {
+        lcd_clear(test_color[x]);
+        vTaskDelay(1000 / portTICK_RATE_MS);
+        x++;
+        if (x == 16) {
+            lcd_show_qq(gImage_qq_logo);
+            vTaskDelay(1000 / portTICK_RATE_MS);
+            x = 0;
+        }
+    }
+    // lcd_show_qq(gImage_qq_logo);
+    // uint16_t cn[] = {
+    //     0xD0DC,
+    //     0xD3EE,
+    //     0xCDED,
+    //     0xC9CF,
+    //     0xBAC3,
+    //     0xB4BA,
+    //     0xC3DF,
+    //     0xB2BB,
+    //     0xBEF5,
+    //     0xCFFE,
+    //     0xA3AC,
+    //     0xB4A6,
+    //     0xB4A6,
+    //     0xCEC5,
+    //     0xCCE4,
+    //     0xC4F1,
+    //     0xA1A3,
+    //     0xD0DC,
+    //     0xD3EE,
+    //     0xCDED,
+    //     0xC9CF,
+    //     0xBAC3,
+    //     0xB4BA,
+    //     0xC3DF,
+    //     0xB2BB,
+    //     0xBEF5,
+    //     0xCFFE,
+    //     0xA3AC,
+    //     0xB4A6,
+    //     0xB4A6,
+    //     0xCEC5,
+    //     0xCCE4,
+    //     0xC4F1,
+    //     0xA1A3,
+    //     0
+    // };
+    // lcd_draw_string(0, 40, CYAN, BLACK, cn);
+}
+
+#if CONFIG_SSL_USING_WOLFSSL
+static void get_time()
+{
+    struct timeval now;
+    int sntp_retry_cnt = 0;
+    int sntp_retry_time = 0;
+
+    sntp_setoperatingmode(0);
+    sntp_setservername(0, "pool.ntp.org");
+    sntp_init();
+
+    while (1) {
+        for (int32_t i = 0; (i < (SNTP_RECV_TIMEOUT / 100)) && now.tv_sec < 1525952900; i++) {
+            vTaskDelay(100 / portTICK_RATE_MS);
+            gettimeofday(&now, NULL);
+        }
+
+        if (now.tv_sec < 1525952900) {
+            sntp_retry_time = SNTP_RECV_TIMEOUT << sntp_retry_cnt;
+
+            if (SNTP_RECV_TIMEOUT << (sntp_retry_cnt + 1) < SNTP_RETRY_TIMEOUT_MAX) {
+                sntp_retry_cnt ++;
+            }
+
+            ESP_LOGI(TAG, "SNTP get time failed, retry after %d ms\n", sntp_retry_time);
+            vTaskDelay(sntp_retry_time / portTICK_RATE_MS);
+        } else {
+            ESP_LOGI(TAG, "SNTP get time success\n");
+            break;
+        }
+    }
+}
+#endif
+
+esp_err_t _http_event_handler(esp_http_client_event_t *evt)
+{
+    switch(evt->event_id) {
+        case HTTP_EVENT_ERROR:
+            ESP_LOGD(TAG, "HTTP_EVENT_ERROR");
+            break;
+        case HTTP_EVENT_ON_CONNECTED:
+            ESP_LOGD(TAG, "HTTP_EVENT_ON_CONNECTED");
+            break;
+        case HTTP_EVENT_HEADER_SENT:
+            ESP_LOGD(TAG, "HTTP_EVENT_HEADER_SENT");
+            break;
+        case HTTP_EVENT_ON_HEADER:
+            ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", evt->header_key, evt->header_value);
+            break;
+        case HTTP_EVENT_ON_DATA:
+            ESP_LOGD(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
+            break;
+        case HTTP_EVENT_ON_FINISH:
+            ESP_LOGD(TAG, "HTTP_EVENT_ON_FINISH");
+            break;
+        case HTTP_EVENT_DISCONNECTED:
+            ESP_LOGD(TAG, "HTTP_EVENT_DISCONNECTED");
+            break;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t event_handler(void *ctx, system_event_t *event)
+{
+    switch (event->event_id) {
+    case SYSTEM_EVENT_STA_START:
+        esp_wifi_connect();
+        break;
+    case SYSTEM_EVENT_STA_GOT_IP:
+        xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
+        break;
+    case SYSTEM_EVENT_STA_DISCONNECTED:
+        /* This is a workaround as ESP32 WiFi libs don't currently
+           auto-reassociate. */
+        esp_wifi_connect();
+        xEventGroupClearBits(wifi_event_group, CONNECTED_BIT);
+        break;
+    default:
+        break;
+    }
+    return ESP_OK;
+}
+
+static void initialise_wifi(void)
+{
+    tcpip_adapter_init();
+    wifi_event_group = xEventGroupCreate();
+    ESP_ERROR_CHECK( esp_event_loop_init(event_handler, NULL) );
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
+    ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM) );
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = "XYNET",
+            .password = "xy13047905068",
+        },
+    };
+    ESP_LOGI(TAG, "Setting WiFi configuration SSID %s...", wifi_config.sta.ssid);
+    ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
+    ESP_ERROR_CHECK( esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config) );
+    ESP_ERROR_CHECK( esp_wifi_start() );
+}
+
+void simple_ota_example_task(void * pvParameter)
+{
+    ESP_LOGI(TAG, "Starting OTA example...");
+    
+    #if CONFIG_SSL_USING_WOLFSSL
+    /* CA date verification need system time */
+    get_time();
+    #endif
+    
+    /* Wait for the callback to set the CONNECTED_BIT in the
+       event group.
+    */
+    xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT,
+                        false, true, portMAX_DELAY);
+    ESP_LOGI(TAG, "Connect to Wifi ! Start to Connect to Server....");
+    
+    esp_http_client_config_t config = {
+        .url = "https://idf.emake.run/8266/lcd.bin",
+        .cert_pem = (char *)server_cert_pem_start,
+        .event_handler = _http_event_handler,
+    };
+    esp_err_t ret = esp_https_ota(&config);
+    if (ret == ESP_OK) {
+        esp_restart();
+    } else {
+        ESP_LOGE(TAG, "Firmware Upgrades Failed");
+    }
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
+{
+    esp_mqtt_client_handle_t client = event->client;
+    int msg_id;
+    // your_context_t *context = event->context;
+    switch (event->event_id) {
+        case MQTT_EVENT_CONNECTED:
+            ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+            msg_id = esp_mqtt_client_publish(client, "/topic/qos1", "data_3", 0, 1, 0);
+            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+
+            msg_id = esp_mqtt_client_subscribe(client, "/topic/qos0", 0);
+            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+
+            msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
+            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+
+            msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
+            ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
+            break;
+        case MQTT_EVENT_DISCONNECTED:
+            ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
+            break;
+
+        case MQTT_EVENT_SUBSCRIBED:
+            ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
+            msg_id = esp_mqtt_client_publish(client, "/topic/qos0", "data", 0, 0, 0);
+            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+            break;
+        case MQTT_EVENT_UNSUBSCRIBED:
+            ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
+            break;
+        case MQTT_EVENT_PUBLISHED:
+            ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
+            break;
+        case MQTT_EVENT_DATA:
+            ESP_LOGI(TAG, "MQTT_EVENT_DATA");
+            printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
+            printf("DATA=%.*s\r\n", event->data_len, event->data);
+            if(strstr(event->data, "start ota")) {
+                ESP_LOGI(TAG, "Free memory: %d bytes", esp_get_free_heap_size());
+                xTaskCreate(&simple_ota_example_task, "ota_example_task", 8192, NULL, 5, NULL);
+            }
+            break;
+        case MQTT_EVENT_ERROR:
+            ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
+            break;
+    }
+    return ESP_OK;
+}
+
+static void mqtt_app_start(void)
+{
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .uri = "mqtt://mqtt.emake.run",
+        .event_handle = mqtt_event_handler,
+        // .user_context = (void *)your_context
+    };
+
+    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_start(client);
+}
+
+void app_main()
+{
+    ESP_LOGI(TAG, "[APP] Startup..");
+    ESP_LOGI(TAG, "[APP] Free memory: %d bytes", esp_get_free_heap_size());
+    ESP_LOGI(TAG, "[APP] IDF version: %s", esp_get_idf_version());
+
+    esp_log_level_set("*", ESP_LOG_INFO);
+    esp_log_level_set("MQTT_CLIENT", ESP_LOG_VERBOSE);
+    esp_log_level_set("TRANSPORT_TCP", ESP_LOG_VERBOSE);
+    esp_log_level_set("TRANSPORT_SSL", ESP_LOG_VERBOSE);
+    esp_log_level_set("TRANSPORT", ESP_LOG_VERBOSE);
+    esp_log_level_set("OUTBOX", ESP_LOG_VERBOSE);
+    // Initialize NVS.
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES) {
+        // OTA app partition table has a smaller NVS partition size than the non-OTA
+        // partition table. This size mismatch may cause NVS initialization to fail.
+        // If this happens, we erase NVS partition and initialize NVS again.
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK( err );
+
+    initialise_wifi();
+    xTaskCreate(&lcd_task, "lcd_task", 2048, NULL, 5, NULL);
+    mqtt_app_start();
 }
 
 

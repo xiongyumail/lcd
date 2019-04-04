@@ -1,0 +1,4 @@
+(sym_lib_table
+  (lib (name lcd)(type Legacy)(uri /home/xiongyu/work/esp/spi_lcd/pcb/esp_lcd/lcd.lib)(options "")(descr ""))
+  (lib (name Espressif)(type Legacy)(uri /usr/share/kicad/library/Espressif.lib)(options "")(descr ""))
+)

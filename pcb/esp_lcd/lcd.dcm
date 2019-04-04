@@ -1,0 +1,7 @@
+EESchema-DOCLIB  Version 2.0
+#
+$CMP LCD_240_240
+D 1.3'240x240 IPS
+$ENDCMP
+#
+#End Doc Library
