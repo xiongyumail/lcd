@@ -269,6 +269,7 @@ static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
             printf("DATA=%.*s\r\n", event->data_len, event->data);
             if(strstr(event->data, "ota")) {
                 ESP_LOGI(TAG, "Free memory: %d bytes", esp_get_free_heap_size());
+                esp_mqtt_client_publish(client, "/lcd_box", "start upgrade!\n", 0, 0, 0);
                 xTaskCreate(&simple_ota_example_task, "ota_example_task", 8192, NULL, 5, NULL);
             } else if (strstr(event->data, "lcd")) {
                 xTaskCreate(&lcd_task, "lcd_task", 2048, NULL, 5, NULL);
