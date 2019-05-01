@@ -41,6 +41,8 @@ extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
 /* FreeRTOS event group to signal when we are connected & ready to make a request */
 static EventGroupHandle_t wifi_event_group;
 
+esp_mqtt_client_handle_t client;
+
 /* The event group allows multiple bits for each event,
    but we only care about one event - are we connected
    to the AP with an IP? */
@@ -772,13 +774,14 @@ void lcd_task(void *arg)
     vTaskDelay(2000 / portTICK_RATE_MS);
     while(1) {
         lcd_clear(test_color[x]);
-        vTaskDelay(1000 / portTICK_RATE_MS);
+        vTaskDelay(300 / portTICK_RATE_MS);
         x++;
         if (x == 16) {
             lcd_show_qq(gImage_qq_logo);
             vTaskDelay(1000 / portTICK_RATE_MS);
             x = 0;
         }
+        esp_mqtt_client_publish(client, "/lcd", "test\n", 0, 1, 0);
     }
     // lcd_show_qq(gImage_qq_logo);
     // uint16_t cn[] = {
@@ -1016,7 +1019,7 @@ static void mqtt_app_start(void)
         // .user_context = (void *)your_context
     };
 
-    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_start(client);
 }
 
