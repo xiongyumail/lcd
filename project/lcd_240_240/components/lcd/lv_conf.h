@@ -19,7 +19,7 @@
  * to store the graphical objects and other data */
 #define LV_MEM_CUSTOM      0                /*1: use custom malloc/free, 0: use the built-in lv_mem_alloc/lv_mem_free*/
 #if LV_MEM_CUSTOM == 0
-#  define LV_MEM_SIZE    (16U * 1024U)        /*Size memory used by `lv_mem_alloc` in bytes (>= 2kB)*/
+#  define LV_MEM_SIZE    (8U * 1024U)        /*Size memory used by `lv_mem_alloc` in bytes (>= 2kB)*/
 #  define LV_MEM_ATTR                         /*Complier prefix for big array declaration*/
 #  define LV_MEM_ADR          0               /*Set an address for memory pool instead of allocation it as an array. Can be in external SRAM too.*/
 #  define LV_MEM_AUTO_DEFRAG  1               /*Automatically defrag on free*/
@@ -184,25 +184,25 @@
 /* More info about fonts: https://docs.littlevgl.com/#Fonts
  * To enable a built-in font use 1,2,4 or 8 values
  * which will determine the bit-per-pixel. Higher value means smoother fonts */
-#define USE_LV_FONT_DEJAVU_10              4
-#define USE_LV_FONT_DEJAVU_10_LATIN_SUP    4
-#define USE_LV_FONT_DEJAVU_10_CYRILLIC     4
-#define USE_LV_FONT_SYMBOL_10              4
+#define USE_LV_FONT_DEJAVU_10              0
+#define USE_LV_FONT_DEJAVU_10_LATIN_SUP    0
+#define USE_LV_FONT_DEJAVU_10_CYRILLIC     0
+#define USE_LV_FONT_SYMBOL_10              0
 
 #define USE_LV_FONT_DEJAVU_20              4
-#define USE_LV_FONT_DEJAVU_20_LATIN_SUP    4
-#define USE_LV_FONT_DEJAVU_20_CYRILLIC     4
-#define USE_LV_FONT_SYMBOL_20              4
+#define USE_LV_FONT_DEJAVU_20_LATIN_SUP    0
+#define USE_LV_FONT_DEJAVU_20_CYRILLIC     0
+#define USE_LV_FONT_SYMBOL_20              0
 
-#define USE_LV_FONT_DEJAVU_30              4
-#define USE_LV_FONT_DEJAVU_30_LATIN_SUP    4
-#define USE_LV_FONT_DEJAVU_30_CYRILLIC     4
-#define USE_LV_FONT_SYMBOL_30              4
+#define USE_LV_FONT_DEJAVU_30              0
+#define USE_LV_FONT_DEJAVU_30_LATIN_SUP    0
+#define USE_LV_FONT_DEJAVU_30_CYRILLIC     0
+#define USE_LV_FONT_SYMBOL_30              0
 
 #define USE_LV_FONT_DEJAVU_40              4
-#define USE_LV_FONT_DEJAVU_40_LATIN_SUP    4
-#define USE_LV_FONT_DEJAVU_40_CYRILLIC     4
-#define USE_LV_FONT_SYMBOL_40              4
+#define USE_LV_FONT_DEJAVU_40_LATIN_SUP    0
+#define USE_LV_FONT_DEJAVU_40_CYRILLIC     0
+#define USE_LV_FONT_SYMBOL_40              0
 
 #define USE_LV_FONT_MONOSPACE_8            1
 
