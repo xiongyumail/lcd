@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -14,149 +15,75 @@
 #include "esp_https_ota.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include "mqtt_client.h"
+#include "lwip/apps/sntp.h"
 #include "lvgl.h"
 #include "lcd.h"
+#include "gui.h"
 
-static const char *TAG = "spi_lcd";
+static const char *TAG = "voltage_source";
 
-#if CONFIG_SSL_USING_WOLFSSL
-#include "lwip/apps/sntp.h"
-#endif
-
-#define VERSION "v1.2.0\n"
-
-extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
-extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
+#define VERSION "v1.0.0\n"
 
 /* FreeRTOS event group to signal when we are connected & ready to make a request */
 static EventGroupHandle_t wifi_event_group;
-
-esp_mqtt_client_handle_t client;
 
 /* The event group allows multiple bits for each event,
    but we only care about one event - are we connected
    to the AP with an IP? */
 const int CONNECTED_BIT = BIT0;
 
-void disp_flush(int32_t x1, int32_t y1, int32_t x2, int32_t y2, const lv_color_t * color_p)
+void IRAM_ATTR disp_flush(int32_t x1, int32_t y1, int32_t x2, int32_t y2, const lv_color_t* color_p)
 {
-    int32_t x, y;
-    int i;
-    bool lsb = 0;
-    uint32_t data[LV_HOR_RES/2];
+    uint32_t len = (sizeof(uint16_t) * ((y2 - y1 + 1)*(x2 - x1 + 1)));
 
     lcd_set_index(x1, y1, x2, y2);
-    for(y = y1; y <= y2; y++) {
-        for(i = 0, x = x1; x <= x2; x++) {
-            if (!lsb) {
-                data[i] =  (color_p->full << 16) & 0xFFFF0000;
-                lsb = 1;
-            } else {
-                data[i] |=  (color_p->full) & 0x0000FFFF;
-                lsb = 0;
-                i++;
-            }
-            color_p++;
-        }
-        lcd_write_data(data, i);
-    }
+    lcd_write_data((uint16_t *)color_p, len);
 
-    lv_flush_ready();                  /* Tell you are ready with the flushing*/
+    lv_flush_ready();
 }
 
-void lcd_task(void *arg)
+
+static void memory_monitor(void * param)
+{
+    (void) param; /*Unused*/
+
+    lv_mem_monitor_t mon;
+    lv_mem_monitor(&mon);
+    printf("used: %6d (%3d %%), frag: %3d %%, biggest free: %6d, system free: %d\n", (int)mon.total_size - mon.free_size,
+           mon.used_pct,
+           mon.frag_pct,
+           (int)mon.free_biggest_size,
+           esp_get_free_heap_size());
+}
+
+static void gui_tick_task(void * arg)
+{
+    while(1) {
+        lv_tick_inc(10);
+        vTaskDelay(10 / portTICK_RATE_MS);
+    }
+}
+
+void gui_task(void *arg)
 {
     lv_init();
     lcd_init();
-    lcd_clear(YELLOW);
+
+    xTaskCreate(gui_tick_task, "gui_tick_task", 200, NULL, 10, NULL);
 
     lv_disp_drv_t disp_drv;               /*Descriptor of a display driver*/
     lv_disp_drv_init(&disp_drv);          /*Basic initialization*/
     disp_drv.disp_flush = disp_flush;     /*Set your driver function*/
     lv_disp_drv_register(&disp_drv);      /*Finally register the driver*/
 
-    static lv_style_t style_txt;
-    lv_style_copy(&style_txt, &lv_style_plain);
-    style_txt.text.font = &lv_font_dejavu_40;
-    style_txt.text.letter_space = 2;
-    style_txt.text.line_space = 1;
-    style_txt.text.color = LV_COLOR_CYAN;
+    lv_task_create(memory_monitor, 3000, LV_TASK_PRIO_MID, NULL);
 
-    lv_obj_t* txt = lv_label_create(lv_scr_act(), NULL);
-    lv_obj_set_style(txt, &style_txt);                    /*Set the created style*/
-    //lv_label_set_long_mode(txt, LV_LABEL_LONG_BREAK);     /*Break the long lines*/
-    lv_label_set_recolor(txt, true);                      /*Enable re-coloring by commands in the text*/
-    //lv_label_set_align(txt, LV_LABEL_ALIGN_CENTER);       /*Center aligned lines*/
-    lv_label_set_text(txt, "Hello KangKang!");
-    lv_obj_align(txt, NULL, LV_ALIGN_CENTER, 0, 0);
+    gui_init(lv_theme_material_init(0, NULL));
 
     while(1) {
         lv_task_handler();
-        vTaskDelay(LV_REFR_PERIOD / portTICK_RATE_MS);
+        vTaskDelay(10 / portTICK_RATE_MS);
     }
-}
-
-#if CONFIG_SSL_USING_WOLFSSL
-static void get_time()
-{
-    struct timeval now;
-    int sntp_retry_cnt = 0;
-    int sntp_retry_time = 0;
-
-    sntp_setoperatingmode(0);
-    sntp_setservername(0, "pool.ntp.org");
-    sntp_init();
-
-    while (1) {
-        for (int32_t i = 0; (i < (SNTP_RECV_TIMEOUT / 100)) && now.tv_sec < 1525952900; i++) {
-            vTaskDelay(100 / portTICK_RATE_MS);
-            gettimeofday(&now, NULL);
-        }
-
-        if (now.tv_sec < 1525952900) {
-            sntp_retry_time = SNTP_RECV_TIMEOUT << sntp_retry_cnt;
-
-            if (SNTP_RECV_TIMEOUT << (sntp_retry_cnt + 1) < SNTP_RETRY_TIMEOUT_MAX) {
-                sntp_retry_cnt ++;
-            }
-
-            ESP_LOGI(TAG, "SNTP get time failed, retry after %d ms\n", sntp_retry_time);
-            vTaskDelay(sntp_retry_time / portTICK_RATE_MS);
-        } else {
-            ESP_LOGI(TAG, "SNTP get time success\n");
-            break;
-        }
-    }
-}
-#endif
-
-esp_err_t _http_event_handler(esp_http_client_event_t *evt)
-{
-    switch(evt->event_id) {
-        case HTTP_EVENT_ERROR:
-            ESP_LOGD(TAG, "HTTP_EVENT_ERROR");
-            break;
-        case HTTP_EVENT_ON_CONNECTED:
-            ESP_LOGD(TAG, "HTTP_EVENT_ON_CONNECTED");
-            break;
-        case HTTP_EVENT_HEADER_SENT:
-            ESP_LOGD(TAG, "HTTP_EVENT_HEADER_SENT");
-            break;
-        case HTTP_EVENT_ON_HEADER:
-            ESP_LOGD(TAG, "HTTP_EVENT_ON_HEADER, key=%s, value=%s", evt->header_key, evt->header_value);
-            break;
-        case HTTP_EVENT_ON_DATA:
-            ESP_LOGD(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
-            break;
-        case HTTP_EVENT_ON_FINISH:
-            ESP_LOGD(TAG, "HTTP_EVENT_ON_FINISH");
-            break;
-        case HTTP_EVENT_DISCONNECTED:
-            ESP_LOGD(TAG, "HTTP_EVENT_DISCONNECTED");
-            break;
-    }
-    return ESP_OK;
 }
 
 static esp_err_t event_handler(void *ctx, system_event_t *event)
@@ -200,102 +127,6 @@ static void initialise_wifi(void)
     ESP_ERROR_CHECK( esp_wifi_start() );
 }
 
-void simple_ota_example_task(void * pvParameter)
-{
-    ESP_LOGI(TAG, "Starting OTA example...");
-    
-    #if CONFIG_SSL_USING_WOLFSSL
-    /* CA date verification need system time */
-    get_time();
-    #endif
-    
-    /* Wait for the callback to set the CONNECTED_BIT in the
-       event group.
-    */
-    xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT,
-                        false, true, portMAX_DELAY);
-    ESP_LOGI(TAG, "Connect to Wifi ! Start to Connect to Server....");
-    
-    esp_http_client_config_t config = {
-        .url = "https://idf.emake.run/8266/lcd.bin",
-        .cert_pem = (char *)server_cert_pem_start,
-        .event_handler = _http_event_handler,
-    };
-    esp_err_t ret = esp_https_ota(&config);
-    if (ret == ESP_OK) {
-        esp_restart();
-    } else {
-        ESP_LOGE(TAG, "Firmware Upgrades Failed");
-    }
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    vTaskDelete(NULL);
-}
-
-static esp_err_t mqtt_event_handler(esp_mqtt_event_handle_t event)
-{
-    esp_mqtt_client_handle_t client = event->client;
-    int msg_id;
-    // your_context_t *context = event->context;
-    switch (event->event_id) {
-        case MQTT_EVENT_CONNECTED:
-            ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-            msg_id = esp_mqtt_client_publish(client, "/lcd_box", VERSION, 0, 1, 0);
-            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
-
-            msg_id = esp_mqtt_client_subscribe(client, "/topic/qos0", 0);
-            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-
-            msg_id = esp_mqtt_client_subscribe(client, "/lcd_box", 1);
-            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-            break;
-        case MQTT_EVENT_DISCONNECTED:
-            ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
-            break;
-
-        case MQTT_EVENT_SUBSCRIBED:
-            ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
-            msg_id = esp_mqtt_client_publish(client, "/lcd_box", "OK!\n", 0, 0, 0);
-            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
-            break;
-        case MQTT_EVENT_UNSUBSCRIBED:
-            ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
-            break;
-        case MQTT_EVENT_PUBLISHED:
-            ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
-            break;
-        case MQTT_EVENT_DATA:
-            ESP_LOGI(TAG, "MQTT_EVENT_DATA");
-            printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
-            printf("DATA=%.*s\r\n", event->data_len, event->data);
-            if(strstr(event->data, "ota")) {
-                ESP_LOGI(TAG, "Free memory: %d bytes", esp_get_free_heap_size());
-                esp_mqtt_client_publish(client, "/lcd_box", "start upgrade!\n", 0, 0, 0);
-                xTaskCreate(&simple_ota_example_task, "ota_example_task", 8192, NULL, 5, NULL);
-            } else if (strstr(event->data, "lcd")) {
-                xTaskCreate(&lcd_task, "lcd_task", 2048, NULL, 5, NULL);
-            }else if (strstr(event->data, "reboot")) {
-                esp_restart();
-            }
-            break;
-        case MQTT_EVENT_ERROR:
-            ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
-            break;
-    }
-    return ESP_OK;
-}
-
-static void mqtt_app_start(void)
-{
-    esp_mqtt_client_config_t mqtt_cfg = {
-        .uri = "mqtt://mqtt.emake.run",
-        .event_handle = mqtt_event_handler,
-        // .user_context = (void *)your_context
-    };
-
-    client = esp_mqtt_client_init(&mqtt_cfg);
-    esp_mqtt_client_start(client);
-}
-
 void app_main()
 {
     ESP_LOGI(TAG, "[APP] Startup..");
@@ -318,8 +149,19 @@ void app_main()
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK( err );
+
+    ESP_LOGI(TAG, "Initializing SNTP");
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, "pool.ntp.org");
+    sntp_init();
+    setenv("TZ", "CST-8", 1);
+    tzset();
+
+    xTaskCreate(gui_task, "gui_task", 2048, NULL, 5, NULL);
+
+    vTaskDelay(2000 / portTICK_RATE_MS);
+
     initialise_wifi();
-    mqtt_app_start();
 }
 
 

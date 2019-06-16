@@ -1,5 +1,6 @@
 #include <stdio.h>
-
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_libc.h"
@@ -9,43 +10,66 @@
 #include "esp8266/spi_struct.h"
 #include "lcd.h"
 
+static SemaphoreHandle_t lcd_write_mux = NULL;
 uint8_t lcd_dc_state = 0;
 
-//向液晶屏写一个8位指令
-void lcd_write_cmd(uint8_t data)
-{
-    uint32_t buf = data<<24;
-    spi_trans_t trans = {0};
-    trans.mosi = &buf;
-    trans.bits.mosi = 8;
-    lcd_dc_state = 0;
-    spi_trans(HSPI_HOST, trans);
-}
+#define SPI_BURST_MAX_LEN 64
 
-//向液晶屏写一个8位数据
-void lcd_write_byte(uint8_t data)
+static void spi_write_data(uint16_t *data, size_t len)
 {
-    uint32_t buf = data<<24;
+    if (len <= 0) {
+        return;
+    }
+    int x, y;
+    uint32_t buf[SPI_BURST_MAX_LEN / 4];
     spi_trans_t trans = {0};
-    trans.mosi = &buf;
-    trans.bits.mosi = 8;
-    lcd_dc_state = 1;
-    spi_trans(HSPI_HOST, trans);
-}
-
-void lcd_write_data(uint32_t *data, uint32_t len)
-{
-    int x;
-    spi_trans_t trans = {0};
-    lcd_dc_state = 1;
-    for (x = 0; x < len / 16; x++) {
-        trans.mosi = data + x*16;
-        trans.bits.mosi = 16 * 32;
+    trans.mosi = buf;
+    trans.bits.mosi = SPI_BURST_MAX_LEN * 8;
+    for (y = 0; y < len / SPI_BURST_MAX_LEN; y++) {
+        for (x = 0; x < SPI_BURST_MAX_LEN / 4; x++) {
+            buf[x] = (data[x*2] << 16) | data[x*2 + 1];
+        }
+        spi_trans(HSPI_HOST, trans);
+        data += SPI_BURST_MAX_LEN / 2;
+    }
+    if (len % SPI_BURST_MAX_LEN) {
+        trans.bits.mosi = (len % SPI_BURST_MAX_LEN) * 8;
+        for (x = 0; x < (len % SPI_BURST_MAX_LEN) / 4; x++) {
+            buf[x] = (data[x*2] << 16) | data[x*2 + 1];
+        }
+        if ((len % SPI_BURST_MAX_LEN) % 4) {
+            if ((len % SPI_BURST_MAX_LEN) / 2) {
+                buf[x] = (data[x*2] << 24) | (data[x*2 + 1] << 8);
+            } else {
+                buf[x] = data[x*2] << 24;
+            }
+        }
         spi_trans(HSPI_HOST, trans);
     }
-    trans.mosi = data + x*16;
-    trans.bits.mosi = (len%16) * 32;
-    spi_trans(HSPI_HOST, trans);
+}
+
+static void lcd_write_cmd(uint8_t data)
+{
+    xSemaphoreTake(lcd_write_mux, portMAX_DELAY);
+    lcd_dc_state = 0;
+    spi_write_data((uint16_t *)&data, 1);
+    xSemaphoreGive(lcd_write_mux);
+}
+
+static void lcd_write_byte(uint8_t data)
+{
+    xSemaphoreTake(lcd_write_mux, portMAX_DELAY);
+    lcd_dc_state = 1;
+    spi_write_data((uint16_t *)&data, 1);
+    xSemaphoreGive(lcd_write_mux);
+}
+
+void lcd_write_data(uint16_t *data, size_t len)
+{
+    xSemaphoreTake(lcd_write_mux, portMAX_DELAY);
+    lcd_dc_state = 1;
+    spi_write_data(data, len);
+    xSemaphoreGive(lcd_write_mux);
 }
     
 void lcd_rst()
@@ -71,24 +95,6 @@ void lcd_set_index(uint16_t x_start,uint16_t y_start,uint16_t x_end,uint16_t y_e
     lcd_write_byte(0x00);
     lcd_write_byte(y_end);    
     lcd_write_cmd(0x2c);    // RAMWR (2Ch): Memory Write 
-}
-
-void lcd_clear(uint16_t color)
-{
-    uint32_t data[16];
-    uint32_t i;
-    spi_trans_t trans = {0};
-    trans.mosi = data;
-    trans.bits.mosi = 32*16;
-
-    for (i=0;i<16;i++) {
-        data[i] = (color<<16) | color;
-    }
-    lcd_set_index(0,0,240-1,240-1);
-    lcd_dc_state = 1;
-    for (i=0;i<1800;i++) {
-        spi_trans(HSPI_HOST, trans);
-    }
 }
 
 static void lcd_config()
@@ -228,6 +234,7 @@ void lcd_init()
     spi_config.event_cb = spi_event_callback;
     spi_init(HSPI_HOST, &spi_config);
 
+    lcd_write_mux = xSemaphoreCreateMutex();
+
     lcd_config();
-    lcd_clear(BLACK);
 }
