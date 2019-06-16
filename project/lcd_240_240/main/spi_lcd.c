@@ -1,21 +1,21 @@
 #include <stdio.h>
+#include <string.h>
+#include <math.h>
 #include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h"
-#include "freertos/semphr.h"
 #include "freertos/event_groups.h"
-#include "esp_system.h"
-#include "esp_log.h"
-#include "esp_libc.h"
+#include "rom/ets_sys.h"
 #include "esp_wifi.h"
 #include "esp_event_loop.h"
-#include "esp_ota_ops.h"
-#include "esp_http_client.h"
-#include "esp_https_ota.h"
-#include "nvs.h"
+#include "esp_log.h"
+#include "esp_system.h"
 #include "nvs_flash.h"
+#include "lwip/sockets.h"
+#include "lwip/dns.h"
+#include "lwip/netdb.h"
 #include "lwip/apps/sntp.h"
+#include "esp_spiffs.h"
 #include "lvgl.h"
 #include "lcd.h"
 #include "gui.h"
@@ -127,6 +127,22 @@ static void initialise_wifi(void)
     ESP_ERROR_CHECK( esp_wifi_start() );
 }
 
+int font_generate_bin(const char *filename, const lv_font_t *font)
+{
+    int ret;
+    size_t size;
+
+    size = font->glyph_dsc[font->glyph_cnt - 1].glyph_index + font->glyph_dsc[font->glyph_cnt - 1].w_px * font->h_px;
+
+    FILE *fp=fopen(filename, "w");
+    if (fp == NULL) {
+        return -1;
+    }
+    ret = fwrite(font->glyph_bitmap, sizeof(uint8_t), size, fp);
+    fclose(fp);
+    return ret;
+}
+
 void app_main()
 {
     ESP_LOGI(TAG, "[APP] Startup..");
@@ -139,16 +155,48 @@ void app_main()
     esp_log_level_set("TRANSPORT_SSL", ESP_LOG_VERBOSE);
     esp_log_level_set("TRANSPORT", ESP_LOG_VERBOSE);
     esp_log_level_set("OUTBOX", ESP_LOG_VERBOSE);
-    // Initialize NVS.
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES) {
-        // OTA app partition table has a smaller NVS partition size than the non-OTA
-        // partition table. This size mismatch may cause NVS initialization to fail.
-        // If this happens, we erase NVS partition and initialize NVS again.
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
+    //Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES) {
+      ESP_ERROR_CHECK(nvs_flash_erase());
+      ret = nvs_flash_init();
     }
-    ESP_ERROR_CHECK( err );
+    ESP_ERROR_CHECK(ret);
+
+    ESP_LOGI(TAG, "Initializing SPIFFS");
+    
+    esp_vfs_spiffs_conf_t conf = {
+      .base_path = "/spiffs",
+      .partition_label = NULL,
+      .max_files = 5,
+      .format_if_mount_failed = true
+    };
+    
+    // Use settings defined above to initialize and mount SPIFFS filesystem.
+    // Note: esp_vfs_spiffs_register is an all-in-one convenience function.
+    ret = esp_vfs_spiffs_register(&conf);
+
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
+            ESP_LOGE(TAG, "Failed to mount or format filesystem");
+        } else if (ret == ESP_ERR_NOT_FOUND) {
+            ESP_LOGE(TAG, "Failed to find SPIFFS partition");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
+        }
+        return;
+    }
+    
+    // size_t total = 0, used = 0;
+    // ret = esp_spiffs_info(NULL, &total, &used);
+    // if (ret != ESP_OK) {
+    //     ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(ret));
+    // } else {
+    //     ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
+    // }
+
+    LV_FONT_DECLARE(seg_font);
+    printf("seg_font.bin generate: %d\n", font_generate_bin("/spiffs/font_seg.bin", &seg_font));
 
     ESP_LOGI(TAG, "Initializing SNTP");
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
@@ -157,7 +205,7 @@ void app_main()
     setenv("TZ", "CST-8", 1);
     tzset();
 
-    xTaskCreate(gui_task, "gui_task", 2048, NULL, 5, NULL);
+    xTaskCreate(gui_task, "gui_task", 4096, NULL, 5, NULL);
 
     vTaskDelay(2000 / portTICK_RATE_MS);
 

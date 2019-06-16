@@ -1,6 +1,6 @@
-[submodule "sdk/ESP8266_RTOS_SDK"]
-	path = sdk/ESP8266_RTOS_SDK
-	url = https://github.com/espressif/ESP8266_RTOS_SDK.git
 [submodule "project/lcd_240_240/components/lcd/lvgl"]
 	path = project/lcd_240_240/components/lcd/lvgl
 	url = https://github.com/littlevgl/lvgl
+[submodule "sdk/ESP8266_RTOS_SDK"]
+	path = sdk/ESP8266_RTOS_SDK
+	url = https://github.com/espressif/ESP8266_RTOS_SDK.git

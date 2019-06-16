@@ -1,4 +1,5 @@
-
+#include <stdio.h>
+#include <stdlib.h>
 #include "lvgl/lvgl.h"
 
 /***********************************************************************************
@@ -976,16 +977,50 @@ static const uint32_t seg_font_unicode_list[] = {
   0,    /*End indicator*/
 };
 
+#include <sys/stat.h>
+uint8_t *seg_font_bitmap = NULL;
+
+const uint8_t * seg_font_get_bitmap_sparse(const lv_font_t * font, uint32_t unicode_letter)
+{
+    /*Check the range*/
+    if(unicode_letter < font->unicode_first || unicode_letter > font->unicode_last) return NULL;
+
+    uint32_t i;
+    size_t size;
+    for(i = 0; font->unicode_list[i] != 0; i++) {
+        if(font->unicode_list[i] == unicode_letter) {
+            size = sizeof(uint8_t) * font->h_px * font->glyph_dsc[i].w_px;
+            if (seg_font_bitmap) {
+              free(seg_font_bitmap);
+              seg_font_bitmap = NULL;
+            }
+            seg_font_bitmap = (uint8_t *) malloc(size);
+            
+            FILE *fp;
+            fp = fopen((const char *)font->glyph_bitmap, "r");
+            if (fp == NULL) {
+                return NULL;
+            }
+            fseek(fp, font->glyph_dsc[i].glyph_index, SEEK_CUR);
+            fread(seg_font_bitmap, sizeof(uint8_t), size, fp);
+            fclose(fp);
+            return seg_font_bitmap;
+        }
+    }
+
+    return NULL;
+}
+
 lv_font_t seg_font = 
 {
     .unicode_first = 32,	/*First Unicode letter in this font*/
     .unicode_last = 126,	/*Last Unicode letter in this font*/
     .h_px = 48,				/*Font height in pixels*/
-    .glyph_bitmap = seg_font_glyph_bitmap,	/*Bitmap of glyphs*/
+    .glyph_bitmap = (uint8_t *)"/spiffs/font_seg.bin",	/*Bitmap of glyphs*/
     .glyph_dsc = seg_font_glyph_dsc,		/*Description of glyphs*/
     .glyph_cnt = 18,			/*Number of glyphs in the font*/
     .unicode_list = seg_font_unicode_list,	/*List of unicode characters*/
-    .get_bitmap = lv_font_get_bitmap_sparse,	/*Function pointer to get glyph's bitmap*/
+    .get_bitmap = seg_font_get_bitmap_sparse,	/*Function pointer to get glyph's bitmap*/
     .get_width = lv_font_get_width_sparse,	/*Function pointer to get glyph's width*/
     .bpp = 8,				/*Bit per pixel*/
     .monospace = 32,		/*Fix width (0: if not used)*/
