@@ -1,21 +1,21 @@
 COMPONENT_ADD_INCLUDEDIRS := include \
                              . \
                              lvgl \
-                             lvgl/lv_core \
-                             lvgl/lv_hal \
-                             lvgl/lv_objx \
-                             lvgl/lv_fonts \
-                             lvgl/lv_misc \
-                             lvgl/lv_themes \
-                             lvgl/lv_draw
+                             lvgl/src/lv_core \
+                             lvgl/src/lv_hal \
+                             lvgl/src/lv_objx \
+                             lvgl/src/lv_font \
+                             lvgl/src/lv_misc \
+                             lvgl/src/lv_themes \
+                             lvgl/src/lv_draw
 
 COMPONENT_SRCDIRS := . \
                      lvgl \
-                     lvgl/lv_core \
-                     lvgl/lv_hal \
-                     lvgl/lv_objx \
-                     lvgl/lv_fonts \
-                     lvgl/lv_misc \
-                     lvgl/lv_themes \
-                     lvgl/lv_draw
+                     lvgl/src/lv_core \
+                     lvgl/src/lv_hal \
+                     lvgl/src/lv_objx \
+                     lvgl/src/lv_font \
+                     lvgl/src/lv_misc \
+                     lvgl/src/lv_themes \
+                     lvgl/src/lv_draw
 
